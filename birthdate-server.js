@@ -39,11 +39,12 @@ async function getBrowser() {
     return { browser, page: browserPage };
 }
 
-// Run a fetch inside the real browser (so ChefScript proof-of-work is handled)
-async function browserFetch(cookie, url, options = {}) {
+// Run both challenge/v1/continue calls inside the browser in one continuous session
+// This keeps ChefScript's session state alive between both calls
+async function browserChallengeFlow(cookie, csrfToken, step3Body, step5BodyFn) {
     const { page } = await getBrowser();
 
-    // Inject cookie fresh for each request
+    // Inject cookie
     await page.setCookie({
         name: ".ROBLOSECURITY",
         value: cookie.replace(".ROBLOSECURITY=", ""),
@@ -54,23 +55,67 @@ async function browserFetch(cookie, url, options = {}) {
         sameSite: "None",
     });
 
-    const result = await page.evaluate(async (url, options) => {
-        try {
+    const result = await page.evaluate(async (csrfToken, step3Body) => {
+        const doFetch = async (url, body) => {
             const resp = await fetch(url, {
-                ...options,
+                method: "POST",
                 credentials: "include",
+                headers: {
+                    "content-type": "application/json",
+                    "x-csrf-token": csrfToken,
+                    "accept": "application/json, text/plain, */*",
+                    "accept-language": "en-US,en;q=0.9",
+                    "sec-fetch-dest": "empty",
+                    "sec-fetch-mode": "cors",
+                    "sec-fetch-site": "same-site",
+                },
+                body: JSON.stringify(body),
             });
             const text = await resp.text();
-            const headers = {};
-            resp.headers.forEach((v, k) => { headers[k] = v; });
-            return { status: resp.status, text, headers };
-        } catch (e) {
-            return { error: e.message };
-        }
-    }, url, options);
+            return { status: resp.status, text };
+        };
 
-    if (result.error) throw new Error(`browserFetch error: ${result.error}`);
-    return result;
+        // Step 3: chef challenge continue
+        const r3 = await doFetch("https://apis.roblox.com/challenge/v1/continue", step3Body);
+        if (r3.status !== 200) return { error: "step3", status: r3.status, text: r3.text };
+
+        return { step3: r3 };
+    }, csrfToken, step3Body);
+
+    if (result.error) return result;
+
+    // Parse step 3 result in Node.js to get challengeId for step 5
+    const step3Data = JSON.parse(result.step3.text);
+    const step5Body = step5BodyFn(step3Data);
+
+    // Now run step 5 in the same browser page (session still alive)
+    const result2 = await page.evaluate(async (csrfToken, step5Body) => {
+        const doFetch = async (url, body) => {
+            const resp = await fetch(url, {
+                method: "POST",
+                credentials: "include",
+                headers: {
+                    "content-type": "application/json",
+                    "x-csrf-token": csrfToken,
+                    "accept": "application/json, text/plain, */*",
+                    "accept-language": "en-US,en;q=0.9",
+                    "sec-fetch-dest": "empty",
+                    "sec-fetch-mode": "cors",
+                    "sec-fetch-site": "same-site",
+                },
+                body: JSON.stringify(body),
+            });
+            const text = await resp.text();
+            return { status: resp.status, text };
+        };
+
+        const r5 = await doFetch("https://apis.roblox.com/challenge/v1/continue", step5Body);
+        if (r5.status !== 200) return { error: "step5", status: r5.status, text: r5.text };
+
+        return { step5: r5 };
+    }, csrfToken, step5Body);
+
+    return { step3: result.step3, step5: result2.step5, error: result2.error, status: result2.status, text: result2.text };
 }
 
 // Warm up browser on startup
@@ -82,15 +127,15 @@ app.use(express.static("public")); // Serve index.html from public folder
 
 const BROWSER_HEADERS = {
     "Content-Type": "application/json",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
     "Origin": "https://www.roblox.com",
     "Referer": "https://www.roblox.com/",
-    "sec-ch-ua": '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
+    "sec-ch-ua": '"Chromium";v="137", "Not/A)Brand";v="24"',
+    "sec-ch-ua-mobile": "?1",
+    "sec-ch-ua-platform": '"Android"',
     "sec-fetch-dest": "empty",
     "sec-fetch-mode": "cors",
     "sec-fetch-site": "same-site",
@@ -136,7 +181,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         // STEP 1: Get CSRF Token
         logs.push("🔄 Step 1: Getting CSRF token...");
 
-        const csrf1 = await robloxRequest("https://auth.roblox.com/v2/logout", {
+        const csrf1 = await robloxRequest("https://users.roblox.com/v1/description", {
             method: "POST",
             headers: {
                 Cookie: roblosecurity,
@@ -231,43 +276,62 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         await delay(1500, 2500);
 
-        // STEP 3: Continue chef challenge — runs inside browser so ChefScript handles proof
-        logs.push("🔄 Step 3: Continuing chef challenge (via browser)...");
+        // STEPS 3 & 5: Both challenge/v1/continue calls run in one continuous browser session
+        // This keeps ChefScript's session state alive between both calls
+        logs.push("🔄 Step 3: Starting browser challenge flow (chef + twostepverification)...");
 
-        const continue1Result = await browserFetch(
-            cookie,
-            "https://apis.roblox.com/challenge/v1/continue",
-            {
-                method: "POST",
-                headers: {
-                    "content-type": "application/json",
-                    "x-csrf-token": csrfToken,
-                },
-                body: JSON.stringify({
-                    challengeId,
-                    challengeType,
-                    challengeMetadata,
-                }),
-            },
-        );
+        const step3Body = { challengeId, challengeType, challengeMetadata };
 
-        if (continue1Result.status !== 200) {
-            console.error(`[Error] Step 3 failed: ${continue1Result.status} - ${continue1Result.text}`);
+        // We need step 3 result first to do step 4, so run step 3 alone initially
+        const { page } = await getBrowser();
+        await page.setCookie({
+            name: ".ROBLOSECURITY",
+            value: cookie.replace(".ROBLOSECURITY=", ""),
+            domain: ".roblox.com",
+            path: "/",
+            httpOnly: false,
+            secure: true,
+            sameSite: "None",
+        });
+
+        const step3Result = await page.evaluate(async (csrfToken, body) => {
+            try {
+                const resp = await fetch("https://apis.roblox.com/challenge/v1/continue", {
+                    method: "POST",
+                    credentials: "include",
+                    headers: {
+                        "content-type": "application/json",
+                        "x-csrf-token": csrfToken,
+                        "accept": "application/json, text/plain, */*",
+                        "accept-language": "en-US,en;q=0.9",
+                        "sec-fetch-dest": "empty",
+                        "sec-fetch-mode": "cors",
+                        "sec-fetch-site": "same-site",
+                    },
+                    body: JSON.stringify(body),
+                });
+                const text = await resp.text();
+                return { status: resp.status, text };
+            } catch(e) { return { error: e.message }; }
+        }, csrfToken, step3Body);
+
+        if (step3Result.error) throw new Error(`Step 3 browser error: ${step3Result.error}`);
+        if (step3Result.status !== 200) {
+            console.error(`[Error] Step 3 failed: ${step3Result.status} - ${step3Result.text}`);
             return res.status(500).json({
                 success: false,
-                error: `Challenge continue (chef) failed: ${continue1Result.status}`,
-                details: continue1Result.text,
+                error: `Challenge continue (chef) failed: ${step3Result.status}`,
+                details: step3Result.text,
                 logs,
             });
         }
 
-        const challenge1Data = JSON.parse(continue1Result.text);
+        const challenge1Data = JSON.parse(step3Result.text);
 
-        logs.push("✅ Step 3: Challenge continued");
+        logs.push("✅ Step 3: Chef challenge continued");
         logs.push(`   New Challenge ID: ${challenge1Data.challengeId}`);
         logs.push(`   New Challenge Type: ${challenge1Data.challengeType}`);
 
-        // Parse metadata to get userId and inner challengeId
         const metadata = JSON.parse(challenge1Data.challengeMetadata);
         const userId = metadata.userId;
         const innerChallengeId = metadata.challengeId;
@@ -275,11 +339,10 @@ app.post("/api/change-birthdate", async (req, res) => {
         logs.push(`   User ID: ${userId}`);
         logs.push(`   Inner Challenge ID: ${innerChallengeId}`);
         console.log(`[Step 3 Parsed Metadata] ${JSON.stringify(metadata)}`);
-        logs.push(`   Full Metadata: ${JSON.stringify(metadata)}`);
 
         await delay(2000, 3500);
 
-        // STEP 4: Verify Password
+        // STEP 4: Verify Password (Node.js — no chef proof needed)
         logs.push("🔄 Step 4: Verifying password...");
 
         const step4Body = JSON.stringify({
@@ -288,7 +351,6 @@ app.post("/api/change-birthdate", async (req, res) => {
             code: password,
         });
         console.log(`[Step 4 Request Body] ${step4Body}`);
-        logs.push(`   Step 4 Request Body: ${step4Body}`);
 
         const verifyPassword = await robloxRequest(
             `https://twostepverification.roblox.com/v1/users/${userId}/challenges/password/verify`,
@@ -303,20 +365,13 @@ app.post("/api/change-birthdate", async (req, res) => {
         );
 
         const step4ResponseText = await verifyPassword.text();
-        const step4Headers = {};
-        verifyPassword.headers.forEach((value, key) => { step4Headers[key] = value; });
         console.log(`[Step 4 Response Status] ${verifyPassword.status}`);
         console.log(`[Step 4 Response Body] ${step4ResponseText}`);
-        console.log(`[Step 4 Response Headers] ${JSON.stringify(step4Headers)}`);
         logs.push(`   Step 4 Status: ${verifyPassword.status}`);
         logs.push(`   Step 4 Response: ${step4ResponseText}`);
-        logs.push(`   Step 4 Headers: ${JSON.stringify(step4Headers)}`);
 
         if (verifyPassword.status !== 200) {
             const errorData = JSON.parse(step4ResponseText);
-            console.error(
-                `[Error] Step 4 failed: ${verifyPassword.status} - ${step4ResponseText}`,
-            );
             return res.status(500).json({
                 success: false,
                 error: `Password verification failed: ${errorData.errors?.[0]?.message || verifyPassword.status}`,
@@ -328,22 +383,16 @@ app.post("/api/change-birthdate", async (req, res) => {
         const verificationToken = verifyData.verificationToken;
 
         if (!verificationToken) {
-            return res.status(500).json({
-                success: false,
-                error: "No verification token received",
-                logs,
-            });
+            return res.status(500).json({ success: false, error: "No verification token received", logs });
         }
 
         logs.push("✅ Step 4: Password verified");
-        logs.push(
-            `   Verification Token: ${verificationToken.substring(0, 20)}...`,
-        );
+        logs.push(`   Verification Token: ${verificationToken.substring(0, 20)}...`);
 
         await delay(1500, 2500);
 
-        // STEP 5. Complete Challenge with Verification Token — via browser so ChefScript handles proof
-        logs.push("🔄 Step 5: Completing twostepverification challenge (via browser)...");
+        // STEP 5: Complete twostepverification — same browser page, session still alive from step 3
+        logs.push("🔄 Step 5: Completing twostepverification (same browser session)...");
 
         const step5Metadata = {
             rememberDevice: false,
@@ -351,37 +400,48 @@ app.post("/api/change-birthdate", async (req, res) => {
             verificationToken: verificationToken,
             challengeId: innerChallengeId,
         };
-
         logs.push(`   Step 5 Metadata: ${JSON.stringify(step5Metadata)}`);
 
-        const continue2Result = await browserFetch(
-            cookie,
-            "https://apis.roblox.com/challenge/v1/continue",
-            {
-                method: "POST",
-                headers: {
-                    "content-type": "application/json",
-                    "x-csrf-token": csrfToken,
-                },
-                body: JSON.stringify({
-                    challengeId: challenge1Data.challengeId,
-                    challengeType: "twostepverification",
-                    challengeMetadata: JSON.stringify(step5Metadata),
-                }),
-            },
-        );
+        const step5Body = {
+            challengeId: challenge1Data.challengeId,
+            challengeType: "twostepverification",
+            challengeMetadata: JSON.stringify(step5Metadata),
+        };
 
-        if (continue2Result.status !== 200) {
-            console.error(`[Error] Step 5 failed: ${continue2Result.status} - ${continue2Result.text}`);
+        // Reuse same page — ChefScript session still active
+        const step5Result = await page.evaluate(async (csrfToken, body) => {
+            try {
+                const resp = await fetch("https://apis.roblox.com/challenge/v1/continue", {
+                    method: "POST",
+                    credentials: "include",
+                    headers: {
+                        "content-type": "application/json",
+                        "x-csrf-token": csrfToken,
+                        "accept": "application/json, text/plain, */*",
+                        "accept-language": "en-US,en;q=0.9",
+                        "sec-fetch-dest": "empty",
+                        "sec-fetch-mode": "cors",
+                        "sec-fetch-site": "same-site",
+                    },
+                    body: JSON.stringify(body),
+                });
+                const text = await resp.text();
+                return { status: resp.status, text };
+            } catch(e) { return { error: e.message }; }
+        }, csrfToken, step5Body);
+
+        if (step5Result.error) throw new Error(`Step 5 browser error: ${step5Result.error}`);
+        if (step5Result.status !== 200) {
+            console.error(`[Error] Step 5 failed: ${step5Result.status} - ${step5Result.text}`);
             return res.status(500).json({
                 success: false,
-                error: `Final challenge failed: ${continue2Result.status}`,
-                details: continue2Result.text,
+                error: `Final challenge failed: ${step5Result.status}`,
+                details: step5Result.text,
                 logs,
             });
         }
 
-        const finalChallengeData = JSON.parse(continue2Result.text);
+        const finalChallengeData = JSON.parse(step5Result.text);
         console.log(`[Step 5 Response Body] ${JSON.stringify(finalChallengeData)}`);
         logs.push(`   Step 5 Response Body: ${JSON.stringify(finalChallengeData)}`);
         logs.push("✅ Step 5: Challenge completed successfully!");
