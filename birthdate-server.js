@@ -161,8 +161,26 @@ app.post("/api/change-birthdate", async (req, res) => {
                 return { status: resp.status, text, headers };
             };
 
+            const browserLogs = [];
+            const bLog = (msg) => { browserLogs.push(`[${new Date().toISOString()}] ${msg}`); };
+
+            // Intercept fetch to log rotating-client-service calls
+            const origFetch = window.fetch;
+            window.fetch = async function(...args) {
+                const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+                if (url.includes('rotating-client-service')) {
+                    bLog(`ChefScript: ${args[1]?.method || 'GET'} ${url.replace('https://apis.roblox.com','')}`);
+                }
+                const resp = await origFetch.apply(this, args);
+                if (url.includes('rotating-client-service')) {
+                    bLog(`ChefScript response: ${resp.status} ${url.replace('https://apis.roblox.com','').substring(0,50)}`);
+                }
+                return resp;
+            };
+
             try {
                 // Step 2: trigger birthdate
+                bLog("Step 2: triggering birthdate POST");
                 const bd = await doFetch("https://users.roblox.com/v1/birthdate", {
                     method: "POST",
                     body: JSON.stringify({ birthMonth, birthDay, birthYear }),
@@ -179,8 +197,11 @@ app.post("/api/change-birthdate", async (req, res) => {
                 const userId = step2Meta.userId;
                 const browserTrackerId = step2Meta.browserTrackerId || "1759714938428001";
 
+                bLog(`Step 2: got ${bd.status}, challengeId=${challengeId}`);
                 // Wait for ChefScript to auto-fire fetch+submit proof
+                bLog("Waiting for ChefScript submit calls...");
                 await new Promise(r => setTimeout(r, 4000));
+                bLog("Wait done, proceeding to step 3");
 
                 // Step 3: continue chef challenge
                 const cont1 = await doFetch("https://apis.roblox.com/challenge/v1/continue", {
@@ -196,6 +217,12 @@ app.post("/api/change-birthdate", async (req, res) => {
                 const cont1Data = JSON.parse(cont1.text);
                 const meta3 = JSON.parse(cont1Data.challengeMetadata);
                 const innerChallengeId = meta3.challengeId;
+
+                bLog(`Step 3 done: type=${cont1Data.challengeType}`);
+                // Wait for ChefScript to react to twostepverification response
+                bLog("Waiting for ChefScript to react to twostepverification...");
+                await new Promise(r => setTimeout(r, 4000));
+                bLog("Wait done, proceeding to step 4");
 
                 // Step 4: verify password
                 const pw = await doFetch(`https://twostepverification.roblox.com/v1/users/${userId}/challenges/password/verify`, {
@@ -216,6 +243,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     actionType: "Generic",
                 };
 
+                bLog(`Step 4 done: verificationToken=${verificationToken.substring(0,10)}...`);
                 // Step 5: complete twostepverification
                 const cont2 = await doFetch("https://apis.roblox.com/challenge/v1/continue", {
                     method: "POST",
@@ -225,9 +253,10 @@ app.post("/api/change-birthdate", async (req, res) => {
                         challengeMetadata: JSON.stringify(step5MetadataObj),
                     }),
                 });
-                if (cont2.status !== 200) return { error: `Step 5 failed ${cont2.status}: ${cont2.text}` };
+                bLog(`Step 5 response: status=${cont2.status}, body=${cont2.text.substring(0,100)}`);
+                if (cont2.status !== 200) return { error: `Step 5 failed ${cont2.status}: ${cont2.text}`, browserLogs };
                 // Check for blocksession in body even if status is 200
-                if (cont2.text.includes("blocksession")) return { error: `Step 5 blocked: ${cont2.text}` };
+                if (cont2.text.includes("blocksession")) return { error: `Step 5 blocked: ${cont2.text}`, browserLogs };
 
                 // Step 6: retry birthdate with verification proof
                 const step6Meta = btoa(JSON.stringify(step5MetadataObj));
@@ -249,9 +278,16 @@ app.post("/api/change-birthdate", async (req, res) => {
                     step6Headers: retry.headers,
                     verificationToken,
                     challengeId,
+                    browserLogs,
                 };
-            } catch(e) { return { error: e.message }; }
+            } catch(e) { return { error: e.message, browserLogs }; }
         }, csrfToken, password, parseInt(birthMonth), parseInt(birthDay), parseInt(birthYear));
+
+        // Log all browser-side logs to Railway console
+        if (result.browserLogs) {
+            result.browserLogs.forEach(l => console.log(`[Browser] ${l}`));
+            result.browserLogs.forEach(l => logs.push(l));
+        }
 
         if (result.error) {
             console.error(`[Error] Browser flow: ${result.error}`);
