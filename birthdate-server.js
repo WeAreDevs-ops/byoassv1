@@ -183,6 +183,10 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         const { page } = await getBrowser();
 
+        // Clear all existing cookies first to avoid session conflict from warmup load
+        const client = await page.createCDPSession();
+        await client.send("Network.clearBrowserCookies");
+
         // Inject cookie then load roblox.com so ChefScript registers
         await page.setCookie({
             name: ".ROBLOSECURITY",
