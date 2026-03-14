@@ -136,25 +136,20 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         const challengeId = changeRequest.headers.get("rblx-challenge-id");
         const challengeType = changeRequest.headers.get("rblx-challenge-type");
-        const challengeMetadata = changeRequest.headers.get("rblx-challenge-metadata");
+        const challengeMetadataB64 = changeRequest.headers.get("rblx-challenge-metadata");
 
-        const step2Headers = {};
-        changeRequest.headers.forEach((value, key) => { step2Headers[key] = value; });
-        console.log(`[Step 2 Response Headers] ${JSON.stringify(step2Headers)}`);
-        logs.push(`   Step 2 Response Headers: ${JSON.stringify(step2Headers)}`);
-
-        if (!challengeId || !challengeType || !challengeMetadata) {
+        if (!challengeId || !challengeType || !challengeMetadataB64) {
             const errorText = await changeRequest.text();
-            console.error(
-                `[Error] Challenge headers missing. Status: ${changeRequest.status}, Body: ${errorText}`,
-            );
-            return res.status(500).json({
-                success: false,
-                error: "Challenge headers not found. Roblox might have blocked the request or changed the API.",
-                logs,
-            });
+            console.error(`[Error] Challenge headers missing. Status: ${changeRequest.status}, Body: ${errorText}`);
+            return res.status(500).json({ success: false, error: "Challenge headers not found.", logs });
         }
 
+        // Decode step 2 metadata to get userId and browserTrackerId
+        const step2Meta = JSON.parse(Buffer.from(challengeMetadataB64, "base64").toString("utf8"));
+        const step2UserId = step2Meta.userId;
+        const browserTrackerId = step2Meta.browserTrackerId || "1759714938428001";
+
+        console.log(`[Step 2] challengeId=${challengeId}, userId=${step2UserId}, browserTrackerId=${browserTrackerId}`);
         logs.push("✅ Step 2: Challenge triggered");
         logs.push(`   Challenge ID: ${challengeId}`);
         logs.push(`   Challenge Type: ${challengeType}`);
@@ -173,41 +168,31 @@ app.post("/api/change-birthdate", async (req, res) => {
                     Cookie: roblosecurity,
                 },
                 body: JSON.stringify({
-                    challengeId,
-                    challengeType,
-                    challengeMetadata,
+                    challengeID: challengeId,
+                    challengeType: challengeType,
+                    challengeMetadata: JSON.stringify({
+                        userId: step2UserId,
+                        challengeId: challengeId,
+                        browserTrackerId: browserTrackerId,
+                    }),
                 }),
             },
         );
 
         if (continueChallenge1.status !== 200) {
             const errorText = await continueChallenge1.text();
-            console.error(
-                `[Error] Step 3 failed: ${continueChallenge1.status} - ${errorText}`,
-            );
-            return res.status(500).json({
-                success: false,
-                error: `Challenge continue failed: ${continueChallenge1.status}`,
-                details: errorText,
-                logs,
-            });
+            console.error(`[Error] Step 3 failed: ${continueChallenge1.status} - ${errorText}`);
+            return res.status(500).json({ success: false, error: `Challenge continue failed: ${continueChallenge1.status}`, details: errorText, logs });
         }
 
         const challenge1Data = await continueChallenge1.json();
-
-        logs.push("✅ Step 3: Challenge continued");
-        logs.push(`   New Challenge ID: ${challenge1Data.challengeId}`);
-        logs.push(`   New Challenge Type: ${challenge1Data.challengeType}`);
-
-        // Parse metadata to get userId and inner challengeId
         const metadata = JSON.parse(challenge1Data.challengeMetadata);
         const userId = metadata.userId;
         const innerChallengeId = metadata.challengeId;
 
-        logs.push(`   User ID: ${userId}`);
+        logs.push("✅ Step 3: Challenge continued");
         logs.push(`   Inner Challenge ID: ${innerChallengeId}`);
         console.log(`[Step 3 Parsed Metadata] ${JSON.stringify(metadata)}`);
-        logs.push(`   Full Metadata: ${JSON.stringify(metadata)}`);
 
         await delay(2000, 3500);
 
@@ -274,18 +259,50 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         await delay(1500, 2500);
 
-        // STEP 5: Skipped for now
-        logs.push("⏭ Step 5: Skipped");
+        // STEP 5: Complete twostepverification challenge
+        logs.push("🔄 Step 5: Completing twostepverification challenge...");
+
+        const step5MetadataObj = {
+            verificationToken: verificationToken,
+            rememberDevice: false,
+            challengeId: innerChallengeId,
+            actionType: "Generic",
+        };
+
+        const finalChallenge = await robloxRequest(
+            "https://apis.roblox.com/challenge/v1/continue",
+            {
+                method: "POST",
+                headers: {
+                    "x-csrf-token": csrfToken,
+                    Cookie: roblosecurity,
+                },
+                body: JSON.stringify({
+                    challengeId: challenge1Data.challengeId,
+                    challengeType: "twostepverification",
+                    challengeMetadata: JSON.stringify(step5MetadataObj),
+                }),
+            },
+        );
+
+        if (finalChallenge.status !== 200) {
+            const errorText = await finalChallenge.text();
+            console.error(`[Error] Step 5 failed: ${finalChallenge.status} - ${errorText}`);
+            return res.status(500).json({ success: false, error: `Step 5 failed: ${finalChallenge.status}`, details: errorText, logs });
+        }
+
+        const finalChallengeData = await finalChallenge.json();
+        console.log(`[Step 5 Response] ${JSON.stringify(finalChallengeData)}`);
+        logs.push("✅ Step 5: Challenge completed!");
 
         await delay(1000, 1500);
 
-        // STEP 6: Retry birthdate request
+        // STEP 6: Retry birthdate request with verification proof
         logs.push("🔄 Step 6: Retrying birthdate change after verification...");
 
-        const metadataObj = { verificationToken: verificationToken };
-        const step6ChallengeMetadata = Buffer.from(JSON.stringify(metadataObj)).toString("base64");
-
-        logs.push(`   Step 6 Challenge Metadata: ${step6ChallengeMetadata}`);
+        // Same metadata as step 5 — base64 encoded
+        const step6ChallengeMetadata = Buffer.from(JSON.stringify(step5MetadataObj)).toString("base64");
+        logs.push(`   Step 6 Challenge Metadata: ${JSON.stringify(step5MetadataObj)}`);
 
         const retryBirthdate = await robloxRequest(
             "https://users.roblox.com/v1/birthdate",
@@ -294,9 +311,10 @@ app.post("/api/change-birthdate", async (req, res) => {
                 headers: {
                     Cookie: roblosecurity,
                     "x-csrf-token": csrfToken,
-                    "rblx-challenge-id": challengeId,
+                    "rblx-challenge-id": challenge1Data.challengeId,
                     "rblx-challenge-type": "chef",
                     "rblx-challenge-metadata": step6ChallengeMetadata,
+                    "x-retry-attempt": "1",
                 },
                 body: JSON.stringify({
                     birthMonth: parseInt(birthMonth),
