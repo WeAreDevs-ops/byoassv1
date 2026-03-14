@@ -63,11 +63,17 @@ async function robloxRequest(url, options = {}) {
 
     const response = await axios(axiosOptions);
 
+    // Log all headers for debugging
+    console.log(`[Response Headers] ${url.replace('https://','').substring(0,50)} -> ${JSON.stringify(Object.keys(response.headers))}`);
+
     // Return a fetch-like response object
     return {
         status: response.status,
         headers: {
-            get: (key) => response.headers[key.toLowerCase()] || null,
+            get: (key) => {
+                const k = key.toLowerCase();
+                return response.headers[k] || response.headers[key] || null;
+            },
             forEach: (fn) => Object.entries(response.headers).forEach(([k, v]) => fn(v, k)),
         },
         text: async () => typeof response.data === "string" ? response.data : JSON.stringify(response.data),
