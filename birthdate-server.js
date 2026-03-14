@@ -32,6 +32,8 @@ async function getBrowser() {
 getBrowser().catch(e => console.error("[Browser] Startup error:", e));
 
 async function setupPageForStep5(page, cookie) {
+    // Log browser console messages
+    page.on('console', msg => console.log(`[Browser Console] ${msg.text()}`));
     // Clear cookies and inject fresh one
     const client = await page.createCDPSession();
     await client.send("Network.clearBrowserCookies");
@@ -337,21 +339,48 @@ app.post("/api/change-birthdate", async (req, res) => {
         });
 
         const step5Result = await page.evaluate(async (csrfToken, outerChallengeId, step5MetadataObj) => {
-            return await new Promise((resolve) => {
-                const xhr = new XMLHttpRequest();
-                xhr.open("POST", "https://apis.roblox.com/challenge/v1/continue");
-                xhr.setRequestHeader("Content-Type", "application/json;charset=utf-8");
-                xhr.setRequestHeader("Accept", "application/json, text/plain, */*");
-                xhr.setRequestHeader("x-csrf-token", csrfToken);
-                xhr.withCredentials = true;
-                xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText });
-                xhr.onerror = () => resolve({ status: 0, text: "XHR error" });
-                xhr.send(JSON.stringify({
-                    challengeId: outerChallengeId,
-                    challengeType: "twostepverification",
-                    challengeMetadata: JSON.stringify(step5MetadataObj),
-                }));
-            });
+            try {
+                // Try to get x-bound-auth-token from Roblox's own generateBoundAuthToken function
+                let boundAuthToken = null;
+
+                // Find the HBA service in Roblox's Angular/module system
+                // It exposes generateBoundAuthToken which uses the meta tag + IndexedDB
+                const metaTag = document.querySelector('meta[name="hardware-backed-authentication-data"]');
+                console.log('[HBA] meta tag found:', !!metaTag, metaTag ? metaTag.content : 'none');
+
+                // Try to find and call generateBoundAuthToken from window scope
+                for (const key of Object.keys(window)) {
+                    if (window[key] && typeof window[key].generateBoundAuthToken === 'function') {
+                        console.log('[HBA] found generateBoundAuthToken on window.' + key);
+                        try {
+                            boundAuthToken = await window[key].generateBoundAuthToken();
+                        } catch(e) { console.log('[HBA] error:', e.message); }
+                        break;
+                    }
+                }
+
+                return await new Promise((resolve) => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open("POST", "https://apis.roblox.com/challenge/v1/continue");
+                    xhr.setRequestHeader("Content-Type", "application/json;charset=utf-8");
+                    xhr.setRequestHeader("Accept", "application/json, text/plain, */*");
+                    xhr.setRequestHeader("x-csrf-token", csrfToken);
+                    if (boundAuthToken) {
+                        xhr.setRequestHeader("x-bound-auth-token", boundAuthToken);
+                        console.log('[HBA] x-bound-auth-token set!');
+                    }
+                    xhr.withCredentials = true;
+                    xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText, hadBoundToken: !!boundAuthToken });
+                    xhr.onerror = () => resolve({ status: 0, text: "XHR error" });
+                    xhr.send(JSON.stringify({
+                        challengeId: outerChallengeId,
+                        challengeType: "twostepverification",
+                        challengeMetadata: JSON.stringify(step5MetadataObj),
+                    }));
+                });
+            } catch(e) {
+                return { status: 0, text: "evaluate error: " + e.message };
+            }
         }, csrfToken, challenge1Data.challengeId, step5MetadataObj);
 
         console.log(`[Step 5] ${step5Result.status} ${step5Result.text}`);
