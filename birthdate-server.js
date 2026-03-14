@@ -267,14 +267,22 @@ app.post("/api/change-birthdate", async (req, res) => {
                 };
 
                 bLog(`Step 4 done: verificationToken=${verificationToken.substring(0,10)}...`);
-                // Step 5: complete twostepverification
-                const cont2 = await doFetch("https://apis.roblox.com/challenge/v1/continue", {
-                    method: "POST",
-                    body: JSON.stringify({
+                // Step 5: complete twostepverification via XHR (same path as real Roblox UI)
+                bLog("Step 5: sending via XHR...");
+                const cont2 = await new Promise((resolve) => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open("POST", "https://apis.roblox.com/challenge/v1/continue");
+                    xhr.setRequestHeader("content-type", "application/json;charset=UTF-8");
+                    xhr.setRequestHeader("x-csrf-token", csrfToken);
+                    xhr.setRequestHeader("accept", "application/json, text/plain, */*");
+                    xhr.withCredentials = true;
+                    xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText });
+                    xhr.onerror = () => resolve({ status: 0, text: "XHR error" });
+                    xhr.send(JSON.stringify({
                         challengeId,
                         challengeType: "twostepverification",
                         challengeMetadata: JSON.stringify(step5MetadataObj),
-                    }),
+                    }));
                 });
                 bLog(`Step 5 response: status=${cont2.status}, body=${cont2.text.substring(0,100)}`);
                 if (cont2.status !== 200) return { error: `Step 5 failed ${cont2.status}: ${cont2.text}`, browserLogs };
