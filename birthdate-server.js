@@ -181,7 +181,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         // STEP 1: Get CSRF Token
         logs.push("🔄 Step 1: Getting CSRF token...");
 
-        const csrf1 = await robloxRequest("https://auth.roblox.com/v2/logout", {
+        const csrf1 = await robloxRequest("https://users.roblox.com/v1/description", {
             method: "POST",
             headers: {
                 Cookie: roblosecurity,
@@ -293,6 +293,11 @@ app.post("/api/change-birthdate", async (req, res) => {
             secure: true,
             sameSite: "None",
         });
+
+        // Reset page state before each request to avoid stale session from previous runs
+        await page.goto("https://www.roblox.com/", { waitUntil: "domcontentloaded", timeout: 20000 });
+        await new Promise(r => setTimeout(r, 2000)); // wait for ChefScript to re-register
+        console.log("[Browser] Page reset, ChefScript re-registered");
 
         const step3Result = await page.evaluate(async (csrfToken, body) => {
             try {
