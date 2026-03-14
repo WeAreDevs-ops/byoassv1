@@ -309,6 +309,13 @@ app.post("/api/change-birthdate", async (req, res) => {
             sameSite: "None",
         });
 
+        // Navigate to account settings page so Angular initializes its XHR interceptors
+        // This is where x-bound-auth-token gets generated
+        console.log("[Browser] Navigating to account settings for Angular init...");
+        await page.goto("https://www.roblox.com/my/account#!/info", { waitUntil: "domcontentloaded", timeout: 30000 });
+        await new Promise(r => setTimeout(r, 5000));
+        console.log("[Browser] Angular initialized");
+
         // Use CDP to intercept the actual request headers sent by XHR
         const cdpClient = await page.createCDPSession();
         await cdpClient.send("Network.enable");
