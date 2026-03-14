@@ -309,6 +309,23 @@ app.post("/api/change-birthdate", async (req, res) => {
             sameSite: "None",
         });
 
+        // Use CDP to intercept the actual request headers sent by XHR
+        const cdpClient = await page.createCDPSession();
+        await cdpClient.send("Network.enable");
+        
+        let capturedHeaders = null;
+        cdpClient.on("Network.requestWillBeSentExtraInfo", (params) => {
+            if (params.headers && JSON.stringify(params.headers).includes("challenge/v1/continue")) {
+                capturedHeaders = params.headers;
+            }
+        });
+        cdpClient.on("Network.requestWillBeSent", (params) => {
+            if (params.request.url.includes("challenge/v1/continue")) {
+                capturedHeaders = params.request.headers;
+                console.log(`[Step 5 CDP Headers] ${JSON.stringify(params.request.headers)}`);
+            }
+        });
+
         const step5Result = await page.evaluate(async (csrfToken, outerChallengeId, step5MetadataObj) => {
             return await new Promise((resolve) => {
                 const xhr = new XMLHttpRequest();
