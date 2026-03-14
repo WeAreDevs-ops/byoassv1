@@ -346,17 +346,28 @@ app.post("/api/change-birthdate", async (req, res) => {
                 // Find the HBA service in Roblox's Angular/module system
                 // It exposes generateBoundAuthToken which uses the meta tag + IndexedDB
                 const metaTag = document.querySelector('meta[name="hardware-backed-authentication-data"]');
-                console.log('[HBA] meta tag found:', !!metaTag, metaTag ? metaTag.content : 'none');
+                console.log('[HBA] meta tag found:', !!metaTag);
+                if (metaTag) {
+                    console.log('[HBA] meta content:', metaTag.content);
+                }
 
-                // Try to find and call generateBoundAuthToken from window scope
-                for (const key of Object.keys(window)) {
-                    if (window[key] && typeof window[key].generateBoundAuthToken === 'function') {
-                        console.log('[HBA] found generateBoundAuthToken on window.' + key);
+                // Try to find generateBoundAuthToken in the Roblox module system
+                // It's exposed via the webpack/require module registry
+                try {
+                    // Try webpackJsonp or __webpack_require__ approach
+                    const allKeys = Object.getOwnPropertyNames(window);
+                    for (const key of allKeys) {
                         try {
-                            boundAuthToken = await window[key].generateBoundAuthToken();
-                        } catch(e) { console.log('[HBA] error:', e.message); }
-                        break;
+                            const obj = window[key];
+                            if (obj && typeof obj === 'object' && typeof obj.generateBoundAuthToken === 'function') {
+                                console.log('[HBA] found on window.' + key);
+                                boundAuthToken = await obj.generateBoundAuthToken();
+                                break;
+                            }
+                        } catch(e) {}
                     }
+                } catch(e) {
+                    console.log('[HBA] window search error:', e.message);
                 }
 
                 return await new Promise((resolve) => {
