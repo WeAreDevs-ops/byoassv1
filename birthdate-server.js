@@ -202,6 +202,11 @@ app.post("/api/change-birthdate", async (req, res) => {
             };
 
             try {
+                // Debug: check cookie state before step 2
+                const cookieStr = document.cookie;
+                const hasRobloCookie = cookieStr.includes('ROBLOSECURITY');
+                bLog(`Cookie check: has_cookie=${hasRobloCookie}, cookie_count=${cookieStr.split(';').filter(c=>c.trim()).length}, url=${window.location.href}`);
+
                 // Step 2: trigger birthdate
                 bLog("Step 2: triggering birthdate POST");
                 const bd = await doFetch("https://users.roblox.com/v1/birthdate", {
