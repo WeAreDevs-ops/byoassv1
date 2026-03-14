@@ -226,6 +226,8 @@ app.post("/api/change-birthdate", async (req, res) => {
                     }),
                 });
                 if (cont2.status !== 200) return { error: `Step 5 failed ${cont2.status}: ${cont2.text}` };
+                // Check for blocksession in body even if status is 200
+                if (cont2.text.includes("blocksession")) return { error: `Step 5 blocked: ${cont2.text}` };
 
                 // Step 6: retry birthdate with verification proof
                 const step6Meta = btoa(JSON.stringify(step5MetadataObj));
