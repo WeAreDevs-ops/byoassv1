@@ -282,14 +282,9 @@ app.post("/api/change-birthdate", async (req, res) => {
         // STEP 6: Retry birthdate request
         logs.push("🔄 Step 6: Retrying birthdate change after verification...");
 
-        const step6ChallengeMetadata = Buffer.from(JSON.stringify({
-            rememberDevice: false,
-            actionType: "Generic",
-            verificationToken: verificationToken,
-            challengeId: innerChallengeId,
-        })).toString("base64");
+        const step6ChallengeMetadata = JSON.stringify({ verificationToken: verificationToken });
 
-        logs.push(`   Step 6 Challenge Metadata (base64): ${step6ChallengeMetadata}`);
+        logs.push(`   Step 6 Challenge Metadata: ${step6ChallengeMetadata}`);
 
         const retryBirthdate = await robloxRequest(
             "https://users.roblox.com/v1/birthdate",
@@ -299,7 +294,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     Cookie: roblosecurity,
                     "x-csrf-token": csrfToken,
                     "rblx-challenge-id": challengeId,
-                    "rblx-challenge-type": "twostepverification",
+                    "rblx-challenge-type": challengeType,
                     "rblx-challenge-metadata": step6ChallengeMetadata,
                 },
                 body: JSON.stringify({
