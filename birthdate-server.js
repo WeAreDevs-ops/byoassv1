@@ -26,6 +26,19 @@ async function getBrowser() {
         "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
     );
     console.log("[Browser] Loading roblox.com for ChefScript...");
+
+    // Log all rotating-client-service calls during warmup
+    browserPage.on('request', req => {
+        if (req.url().includes('rotating-client-service')) {
+            console.log(`[ChefScript Warmup] ${req.method()} ${req.url().replace('https://apis.roblox.com','')}`);
+        }
+    });
+    browserPage.on('response', resp => {
+        if (resp.url().includes('rotating-client-service')) {
+            console.log(`[ChefScript Warmup Response] ${resp.status()} ${resp.url().replace('https://apis.roblox.com','').substring(0,60)}`);
+        }
+    });
+
     await browserPage.goto("https://www.roblox.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
     await new Promise(r => setTimeout(r, 3000));
     console.log("[Browser] Ready.");
