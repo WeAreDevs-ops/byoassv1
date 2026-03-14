@@ -282,7 +282,8 @@ app.post("/api/change-birthdate", async (req, res) => {
         // STEP 6: Retry birthdate request
         logs.push("🔄 Step 6: Retrying birthdate change after verification...");
 
-        const step6ChallengeMetadata = Buffer.from(JSON.stringify({ verificationToken: verificationToken })).toString("base64");
+        const metadataObj = { verificationToken: verificationToken };
+        const step6ChallengeMetadata = Buffer.from(JSON.stringify(metadataObj)).toString("base64");
 
         logs.push(`   Step 6 Challenge Metadata: ${step6ChallengeMetadata}`);
 
@@ -294,14 +295,13 @@ app.post("/api/change-birthdate", async (req, res) => {
                     Cookie: roblosecurity,
                     "x-csrf-token": csrfToken,
                     "rblx-challenge-id": challengeId,
-                    "rblx-challenge-type": challengeType,
+                    "rblx-challenge-type": "chef",
                     "rblx-challenge-metadata": step6ChallengeMetadata,
                 },
                 body: JSON.stringify({
                     birthMonth: parseInt(birthMonth),
                     birthDay: parseInt(birthDay),
                     birthYear: parseInt(birthYear),
-                    password: password,
                 }),
             }
         );
