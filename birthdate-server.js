@@ -27,16 +27,29 @@ const BROWSER_HEADERS = {
     "Connection": "keep-alive",
 };
 
-// All requests go direct (residential IP from localhost/VPS)
+// All requests go through proxy if configured
 async function robloxRequest(url, options = {}) {
     console.log(`[Roblox Request] ${options.method || "GET"} ${url}`);
-    const response = await fetch(url, {
+
+    const proxyUrl = process.env.PROXY_URL;
+    const proxyUser = process.env.PROXY_USER;
+    const proxyPass = process.env.PROXY_PASS;
+
+    let fetchOptions = {
         ...options,
         headers: {
             ...BROWSER_HEADERS,
             ...options.headers,
         },
-    });
+    };
+
+    if (proxyUrl && proxyUser && proxyPass) {
+        const { HttpsProxyAgent } = await import('https-proxy-agent');
+        const proxyAuth = `http://${proxyUser}:${proxyPass}@${proxyUrl.replace('http://', '')}`;
+        fetchOptions.agent = new HttpsProxyAgent(proxyAuth);
+    }
+
+    const response = await fetch(url, fetchOptions);
     return response;
 }
 
