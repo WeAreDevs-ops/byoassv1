@@ -178,19 +178,8 @@ app.post("/api/change-birthdate", async (req, res) => {
             ? cookie
             : `.ROBLOSECURITY=${cookie}`;
 
-        // STEP 1: Get CSRF token from Node.js without cookie (IP doesn't matter, no auth needed)
-        logs.push("🔄 Step 1: Getting CSRF token...");
-        const csrfResp = await robloxRequest("https://auth.roblox.com/v1/authentication-ticket", {
-            method: "POST",
-        });
-        const csrfToken = csrfResp.headers.get("x-csrf-token");
-        if (!csrfToken) {
-            return res.status(403).json({ success: false, error: "Failed to get CSRF token.", logs });
-        }
-        logs.push("✅ Step 1: CSRF token obtained");
-
-        // STEP 2: Trigger birthdate challenge — inside browser so cookie uses browser IP
-        logs.push("🔄 Step 2: Triggering birthdate challenge (via browser)...");
+        // STEPS 1+2: Get CSRF from page meta tag + trigger birthdate — all inside browser
+        logs.push("🔄 Steps 1+2: Loading Roblox and triggering challenge (via browser)...");
 
         const { page } = await getBrowser();
 
@@ -208,8 +197,13 @@ app.post("/api/change-birthdate", async (req, res) => {
         await new Promise(r => setTimeout(r, 2000));
         console.log("[Browser] Page loaded, ChefScript registered");
 
-        const steps12Result = await page.evaluate(async (csrfToken, birthMonth, birthDay, birthYear, password) => {
+        const steps12Result = await page.evaluate(async (birthMonth, birthDay, birthYear, password) => {
             try {
+                // Step 1: read CSRF token from page meta tag
+                const metaTag = document.querySelector('meta[name="csrf-token"]');
+                const csrfToken = metaTag ? metaTag.getAttribute('data-token') || metaTag.getAttribute('content') : null;
+                if (!csrfToken) return { error: "No CSRF token in page meta", csrfToken: null };
+
                 // Step 2: trigger birthdate change
 
                 // Step 2: trigger birthdate change
@@ -234,11 +228,17 @@ app.post("/api/change-birthdate", async (req, res) => {
 
                 return { csrfToken, bdStatus: bdResp.status, bdText, bdHeaders };
             } catch(e) { return { error: e.message }; }
-        }, csrfToken, parseInt(birthMonth), parseInt(birthDay), parseInt(birthYear), password);
+        }, parseInt(birthMonth), parseInt(birthDay), parseInt(birthYear), password);
 
         if (steps12Result.error) {
             return res.status(500).json({ success: false, error: `Browser step 2 error: ${steps12Result.error}`, logs });
         }
+
+        const csrfToken = steps12Result.csrfToken;
+        if (!csrfToken) {
+            return res.status(403).json({ success: false, error: "Failed to get CSRF token from page.", logs });
+        }
+        logs.push("✅ Step 1: CSRF token obtained");
 
         if (steps12Result.bdStatus === 200) {
             logs.push("✅ Step 2: Birthdate changed without challenge!");
