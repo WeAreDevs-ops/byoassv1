@@ -4,6 +4,7 @@
 
 const express = require("express");
 const cors = require("cors");
+const { webcrypto: crypto } = require("crypto");
 const app = express();
 
 // HBA (Hardware Bound Auth) token generation
@@ -50,21 +51,28 @@ async function generateAndRegisterHBAKey(csrfToken, cookie) {
     return hbaKeyPair;
 }
 
-async function generateBoundAuthToken(url, method) {
+async function generateBoundAuthToken(url, method, body) {
     if (!hbaKeyPair) return null;
     try {
         const timestamp = Math.floor(Date.now() / 1000).toString();
         const urlObj = new URL(url);
         const pathname = urlObj.pathname;
         const upperMethod = method.toUpperCase();
-
-        // p = [u, i, c, f].join("|") where u="" (no body hash used in this call type)
-        const p = ["", timestamp, url, upperMethod].join("|");
-        // h = ["", i, d, f].join("|")
-        const h = ["", timestamp, pathname, upperMethod].join("|");
-
         const enc = new TextEncoder();
         const algo = { name: "ECDSA", hash: { name: "SHA-256" } };
+
+        // Compute SHA-256 hash of body, base64 encoded (s in the source)
+        let bodyHash = "";
+        if (body) {
+            const bodyStr = typeof body === "string" ? body : JSON.stringify(body);
+            const hashBuf = await crypto.subtle.digest("SHA-256", enc.encode(bodyStr));
+            bodyHash = Buffer.from(hashBuf).toString("base64");
+        }
+
+        // p = [bodyHash, timestamp, url, method].join("|")
+        // h = ["", timestamp, pathname, method].join("|")
+        const p = [bodyHash, timestamp, url, upperMethod].join("|");
+        const h = ["", timestamp, pathname, upperMethod].join("|");
 
         const [sigP, sigH] = await Promise.all([
             crypto.subtle.sign(algo, hbaKeyPair.privateKey, enc.encode(p)),
@@ -72,10 +80,11 @@ async function generateBoundAuthToken(url, method) {
         ]);
 
         const v = Buffer.from(sigP).toString("base64");
-        const m = Buffer.from(sigH).toString("base64");
+        const y = Buffer.from(sigH).toString("base64");
 
-        const token = ["v1", "", timestamp, v, m].join("|");
-        console.log(`[HBA] Generated token for ${method} ${pathname}: v1||${timestamp}|...`);
+        // token = ["v1", bodyHash, timestamp, v, y].join("|")
+        const token = ["v1", bodyHash, timestamp, v, y].join("|");
+        console.log(`[HBA] Generated token for ${method} ${pathname}: v1|${bodyHash.substring(0,8)}...|${timestamp}|...`);
         return token;
     } catch(e) {
         console.error(`[HBA] Token generation error: ${e.message}`);
@@ -178,7 +187,8 @@ app.post("/api/change-birthdate", async (req, res) => {
         // STEP 2: Trigger Challenge
         logs.push("🔄 Step 2: Sending birthdate change request...");
 
-        const step2BoundToken = await generateBoundAuthToken("https://users.roblox.com/v1/birthdate", "POST");
+        const step2Body = JSON.stringify({ birthMonth: parseInt(birthMonth), birthDay: parseInt(birthDay), birthYear: parseInt(birthYear) });
+        const step2BoundToken = await generateBoundAuthToken("https://users.roblox.com/v1/birthdate", "POST", step2Body);
         logs.push(`   Step 2 HBA token: ${step2BoundToken ? "generated ✅" : "not available ⚠️"}`);
 
         const changeRequest = await robloxRequest(
@@ -193,11 +203,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     "traceparent": traceparent,
                     ...(step2BoundToken ? { "x-bound-auth-token": step2BoundToken } : {}),
                 },
-                body: JSON.stringify({
-                    birthMonth: parseInt(birthMonth),
-                    birthDay: parseInt(birthDay),
-                    birthYear: parseInt(birthYear),
-                }),
+                body: step2Body,
             },
         );
 
@@ -357,7 +363,8 @@ app.post("/api/change-birthdate", async (req, res) => {
         };
 
         const step5Url = "https://apis.roblox.com/challenge/v1/continue";
-        const step5BoundToken = await generateBoundAuthToken(step5Url, "POST");
+        const step5Body = JSON.stringify({ challengeId: challenge1Data.challengeId, challengeType: "twostepverification", challengeMetadata: JSON.stringify(step5MetadataObj) });
+        const step5BoundToken = await generateBoundAuthToken(step5Url, "POST", step5Body);
         logs.push(`   HBA token: ${step5BoundToken ? "generated ✅" : "not available ⚠️"}`);
 
         const finalChallenge = await robloxRequest(
@@ -372,11 +379,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     "traceparent": `00-${traceId}-${Array.from({length:16},()=>Math.floor(Math.random()*16).toString(16)).join('')}-00`,
                     ...(step5BoundToken ? { "x-bound-auth-token": step5BoundToken } : {}),
                 },
-                body: JSON.stringify({
-                    challengeId: challenge1Data.challengeId,
-                    challengeType: "twostepverification",
-                    challengeMetadata: JSON.stringify(step5MetadataObj),
-                }),
+                body: step5Body,
             },
         );
 
