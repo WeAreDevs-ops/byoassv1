@@ -65,6 +65,10 @@ async function robloxRequest(url, options = {}) {
 
     // Log all headers for debugging
     console.log(`[Response Headers] ${url.replace('https://','').substring(0,50)} -> ${JSON.stringify(Object.keys(response.headers))}`);
+    if (response.headers['x-error-message']) {
+        console.log(`[Error Message] ${response.headers['x-error-message']}`);
+    }
+    console.log(`[Response Status] ${response.status} body=${JSON.stringify(response.data).substring(0,100)}`);
 
     // Return a fetch-like response object
     return {
