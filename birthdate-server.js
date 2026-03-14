@@ -4,7 +4,8 @@
 
 const express = require("express");
 const cors = require("cors");
-const app = express();
+const axios = require("axios");
+const { HttpsProxyAgent } = require("https-proxy-agent");
 
 app.use(cors());
 app.use(express.json());
@@ -28,29 +29,48 @@ const BROWSER_HEADERS = {
 };
 
 // All requests go through proxy if configured
-async function robloxRequest(url, options = {}) {
-    console.log(`[Roblox Request] ${options.method || "GET"} ${url}`);
-
+function getProxyAgent() {
     const proxyUrl = process.env.PROXY_URL;
     const proxyUser = process.env.PROXY_USER;
     const proxyPass = process.env.PROXY_PASS;
+    if (proxyUrl && proxyUser && proxyPass) {
+        const proxyAuth = `http://${proxyUser}:${proxyPass}@${proxyUrl.replace('http://', '')}`;
+        console.log(`[Proxy] Using ${proxyAuth.split('@')[1]}`);
+        return new HttpsProxyAgent(proxyAuth);
+    }
+    return null;
+}
 
-    let fetchOptions = {
-        ...options,
-        headers: {
-            ...BROWSER_HEADERS,
-            ...options.headers,
-        },
+async function robloxRequest(url, options = {}) {
+    console.log(`[Roblox Request] ${options.method || "GET"} ${url}`);
+
+    const headers = { ...BROWSER_HEADERS, ...options.headers };
+    const agent = getProxyAgent();
+
+    const axiosOptions = {
+        method: options.method || "GET",
+        url,
+        headers,
+        data: options.body || undefined,
+        httpsAgent: agent,
+        httpAgent: agent,
+        validateStatus: () => true, // don't throw on any status
+        responseType: "text",
+        decompress: true,
     };
 
-    if (proxyUrl && proxyUser && proxyPass) {
-        const { HttpsProxyAgent } = await import('https-proxy-agent');
-        const proxyAuth = `http://${proxyUser}:${proxyPass}@${proxyUrl.replace('http://', '')}`;
-        fetchOptions.agent = new HttpsProxyAgent(proxyAuth);
-    }
+    const response = await axios(axiosOptions);
 
-    const response = await fetch(url, fetchOptions);
-    return response;
+    // Return a fetch-like response object
+    return {
+        status: response.status,
+        headers: {
+            get: (key) => response.headers[key.toLowerCase()] || null,
+            forEach: (fn) => Object.entries(response.headers).forEach(([k, v]) => fn(v, k)),
+        },
+        text: async () => typeof response.data === "string" ? response.data : JSON.stringify(response.data),
+        json: async () => typeof response.data === "string" ? JSON.parse(response.data) : response.data,
+    };
 }
 
 // Delay helper - random delay between min and max ms to mimic human behavior
@@ -274,7 +294,7 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         await delay(10000, 10000);
 
-        // STEP 5: Complete twostepverification challenge
+        // STEP 5: Complete twostepverification
         logs.push("🔄 Step 5: Completing twostepverification...");
 
         const step5MetadataObj = {
