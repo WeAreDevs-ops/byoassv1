@@ -4,10 +4,32 @@
 
 const express = require("express");
 const cors = require("cors");
-const axios = require("axios");
-const { HttpsProxyAgent } = require("https-proxy-agent");
+const puppeteer = require("puppeteer-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+puppeteer.use(StealthPlugin());
 
 const app = express();
+
+// Browser singleton — only used for step 5
+let browser = null;
+let browserPage = null;
+
+async function getBrowser() {
+    if (browser && browserPage) return browserPage;
+    console.log("[Browser] Launching for step 5...");
+    browser = await puppeteer.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    });
+    browserPage = await browser.newPage();
+    await browserPage.setUserAgent("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36");
+    await browserPage.goto("https://www.roblox.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
+    await new Promise(r => setTimeout(r, 3000));
+    console.log("[Browser] Ready.");
+    return browserPage;
+}
+
+getBrowser().catch(e => console.error("[Browser] Startup error:", e));
 
 app.use(cors());
 app.use(express.json());
@@ -30,59 +52,14 @@ const BROWSER_HEADERS = {
     "Connection": "keep-alive",
 };
 
-// All requests go through proxy if configured
-function getProxyAgent() {
-    const proxyUrl = process.env.PROXY_URL;
-    const proxyUser = process.env.PROXY_USER;
-    const proxyPass = process.env.PROXY_PASS;
-    if (proxyUrl && proxyUser && proxyPass) {
-        const proxyAuth = `http://${proxyUser}:${proxyPass}@${proxyUrl.replace('http://', '')}`;
-        console.log(`[Proxy] Using ${proxyAuth.split('@')[1]}`);
-        return new HttpsProxyAgent(proxyAuth);
-    }
-    return null;
-}
-
+// All requests via plain Node.js fetch
 async function robloxRequest(url, options = {}) {
     console.log(`[Roblox Request] ${options.method || "GET"} ${url}`);
-
-    const headers = { ...BROWSER_HEADERS, ...options.headers };
-    const agent = getProxyAgent();
-
-    const axiosOptions = {
-        method: options.method || "GET",
-        url,
-        headers,
-        data: options.body || undefined,
-        httpsAgent: agent,
-        httpAgent: agent,
-        validateStatus: () => true, // don't throw on any status
-        responseType: "text",
-        decompress: true,
-    };
-
-    const response = await axios(axiosOptions);
-
-    // Log all headers for debugging
-    console.log(`[Response Headers] ${url.replace('https://','').substring(0,50)} -> ${JSON.stringify(Object.keys(response.headers))}`);
-    if (response.headers['x-error-message']) {
-        console.log(`[Error Message] ${response.headers['x-error-message']}`);
-    }
-    console.log(`[Response Status] ${response.status} body=${JSON.stringify(response.data).substring(0,100)}`);
-
-    // Return a fetch-like response object
-    return {
-        status: response.status,
-        headers: {
-            get: (key) => {
-                const k = key.toLowerCase();
-                return response.headers[k] || response.headers[key] || null;
-            },
-            forEach: (fn) => Object.entries(response.headers).forEach(([k, v]) => fn(v, k)),
-        },
-        text: async () => typeof response.data === "string" ? response.data : JSON.stringify(response.data),
-        json: async () => typeof response.data === "string" ? JSON.parse(response.data) : response.data,
-    };
+    const response = await fetch(url, {
+        ...options,
+        headers: { ...BROWSER_HEADERS, ...options.headers },
+    });
+    return response;
 }
 
 // Delay helper - random delay between min and max ms to mimic human behavior
@@ -306,8 +283,9 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         await delay(10000, 10000);
 
-        // STEP 5: Complete twostepverification
-        logs.push("🔄 Step 5: Completing twostepverification...");
+        // STEP 5: Complete twostepverification via Puppeteer XHR
+        // Angular's XHR interceptor auto-adds x-bound-auth-token
+        logs.push("🔄 Step 5: Completing twostepverification (via browser XHR)...");
 
         const step5MetadataObj = {
             verificationToken: verificationToken,
@@ -316,35 +294,48 @@ app.post("/api/change-birthdate", async (req, res) => {
             actionType: "Generic",
         };
 
-        const finalChallenge = await robloxRequest(
-            "https://apis.roblox.com/challenge/v1/continue",
-            {
-                method: "POST",
-                headers: {
-                    "x-csrf-token": csrfToken,
-                    Cookie: roblosecurity,
-                    "Accept": "application/json, text/plain, */*",
-                    "Content-Type": "application/json;charset=utf-8",
-                    "traceparent": `00-${traceId}-${Array.from({length:16},()=>Math.floor(Math.random()*16).toString(16)).join('')}-00`,
-                },
-                body: JSON.stringify({
-                    challengeId: challenge1Data.challengeId,
+        const page = await getBrowser();
+
+        // Clear cookies and inject fresh one
+        const client = await page.createCDPSession();
+        await client.send("Network.clearBrowserCookies");
+        await page.setCookie({
+            name: ".ROBLOSECURITY",
+            value: cookie.replace(".ROBLOSECURITY=", ""),
+            domain: ".roblox.com",
+            path: "/",
+            httpOnly: false,
+            secure: true,
+            sameSite: "None",
+        });
+
+        const step5Result = await page.evaluate(async (csrfToken, outerChallengeId, step5MetadataObj) => {
+            return await new Promise((resolve) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open("POST", "https://apis.roblox.com/challenge/v1/continue");
+                xhr.setRequestHeader("Content-Type", "application/json;charset=utf-8");
+                xhr.setRequestHeader("Accept", "application/json, text/plain, */*");
+                xhr.setRequestHeader("x-csrf-token", csrfToken);
+                xhr.withCredentials = true;
+                xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText });
+                xhr.onerror = () => resolve({ status: 0, text: "XHR error" });
+                xhr.send(JSON.stringify({
+                    challengeId: outerChallengeId,
                     challengeType: "twostepverification",
                     challengeMetadata: JSON.stringify(step5MetadataObj),
-                }),
-            },
-        );
+                }));
+            });
+        }, csrfToken, challenge1Data.challengeId, step5MetadataObj);
 
-        const step5Text = await finalChallenge.text();
-        console.log(`[Step 5] ${finalChallenge.status} ${step5Text}`);
-        logs.push(`   Step 5 Status: ${finalChallenge.status}`);
-        logs.push(`   Step 5 Response: ${step5Text}`);
+        console.log(`[Step 5] ${step5Result.status} ${step5Result.text}`);
+        logs.push(`   Step 5 Status: ${step5Result.status}`);
+        logs.push(`   Step 5 Response: ${step5Result.text}`);
 
-        if (finalChallenge.status !== 200) {
-            return res.status(500).json({ success: false, error: `Step 5 failed: ${finalChallenge.status}`, details: step5Text, logs });
+        if (step5Result.status !== 200) {
+            return res.status(500).json({ success: false, error: `Step 5 failed: ${step5Result.status}`, details: step5Result.text, logs });
         }
-        if (step5Text.includes("blocksession")) {
-            return res.status(500).json({ success: false, error: "Step 5 blocked", details: step5Text, logs });
+        if (step5Result.text.includes("blocksession")) {
+            return res.status(500).json({ success: false, error: "Step 5 blocked", details: step5Result.text, logs });
         }
 
         logs.push("✅ Step 5: Challenge completed!");
