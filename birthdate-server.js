@@ -4,10 +4,6 @@
 
 const express = require("express");
 const cors = require("cors");
-const puppeteer = require("puppeteer-extra");
-const StealthPlugin = require("puppeteer-extra-plugin-stealth");
-puppeteer.use(StealthPlugin());
-
 const app = express();
 
 // HBA (Hardware Bound Auth) token generation
@@ -87,48 +83,7 @@ async function generateBoundAuthToken(url, method) {
     }
 }
 
-// Browser singleton — only used for step 5
-let browser = null;
-let browserPage = null;
 
-async function getBrowser() {
-    if (browser && browserPage) return browserPage;
-    console.log("[Browser] Launching for step 5...");
-    browser = await puppeteer.launch({
-        headless: true,
-        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-    });
-    browserPage = await browser.newPage();
-    await browserPage.setUserAgent("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36");
-    await browserPage.goto("https://www.roblox.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
-    await new Promise(r => setTimeout(r, 3000));
-    console.log("[Browser] Ready.");
-    return browserPage;
-}
-
-getBrowser().catch(e => console.error("[Browser] Startup error:", e));
-
-async function setupPageForStep5(page, cookie) {
-    // Log browser console messages
-    page.on('console', msg => console.log(`[Browser Console] ${msg.text()}`));
-    // Clear cookies and inject fresh one
-    const client = await page.createCDPSession();
-    await client.send("Network.clearBrowserCookies");
-    await page.setCookie({
-        name: ".ROBLOSECURITY",
-        value: cookie.replace(".ROBLOSECURITY=", ""),
-        domain: ".roblox.com",
-        path: "/",
-        httpOnly: false,
-        secure: true,
-        sameSite: "None",
-    });
-    // Navigate to account settings so Angular initializes its XHR interceptors
-    console.log("[Browser] Navigating to account settings for Angular init...");
-    await page.goto("https://www.roblox.com/my/account#!/info", { waitUntil: "domcontentloaded", timeout: 30000 });
-    await new Promise(r => setTimeout(r, 5000));
-    console.log("[Browser] Angular initialized");
-}
 
 app.use(cors());
 app.use(express.json());
