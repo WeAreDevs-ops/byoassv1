@@ -57,9 +57,12 @@ async function getBrowser() {
 
 async function setupBrowserForRequest(cookie) {
     const page = await getBrowser();
-    // Clear cookies and inject fresh one
+    // Clear cookies first
     const client = await page.createCDPSession();
     await client.send("Network.clearBrowserCookies");
+    // Navigate first so the proxy context is established
+    await page.goto("https://www.roblox.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
+    // Then inject cookie AFTER page loads through proxy
     await page.setCookie({
         name: ".ROBLOSECURITY",
         value: cookie.replace(".ROBLOSECURITY=", ""),
@@ -69,8 +72,11 @@ async function setupBrowserForRequest(cookie) {
         secure: true,
         sameSite: "None",
     });
-    await page.goto("https://www.roblox.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
-    await new Promise(r => setTimeout(r, 3000));
+    // Verify cookie was set
+    const cookies = await page.cookies("https://www.roblox.com/");
+    const robloCookie = cookies.find(c => c.name === ".ROBLOSECURITY");
+    console.log(`[Browser] Cookie set: ${robloCookie ? "YES len=" + robloCookie.value.length : "NO"}`);
+    await new Promise(r => setTimeout(r, 2000));
     return page;
 }
 
