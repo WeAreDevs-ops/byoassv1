@@ -282,7 +282,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         // STEP 6: Retry birthdate request
         logs.push("🔄 Step 6: Retrying birthdate change after verification...");
 
-        const step6ChallengeMetadata = JSON.stringify({ verificationToken: verificationToken });
+        const step6ChallengeMetadata = Buffer.from(JSON.stringify({ verificationToken: verificationToken })).toString("base64");
 
         logs.push(`   Step 6 Challenge Metadata: ${step6ChallengeMetadata}`);
 
