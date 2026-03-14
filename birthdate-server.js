@@ -155,12 +155,52 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         await delay(1000, 2000);
 
-        // STEPS 2-6: All inside browser so ChefScript stays alive throughout
-        logs.push("🔄 Running steps 2-6 inside browser (ChefScript)...");
+        // STEP 2: Trigger challenge (Node.js — no ChefScript needed)
+        logs.push("🔄 Step 2: Sending birthdate change request...");
+
+        const changeRequest = await robloxRequest("https://users.roblox.com/v1/birthdate", {
+            method: "POST",
+            headers: { Cookie: roblosecurity, "x-csrf-token": csrfToken },
+            body: JSON.stringify({
+                birthMonth: parseInt(birthMonth),
+                birthDay: parseInt(birthDay),
+                birthYear: parseInt(birthYear),
+            }),
+        });
+
+        if (changeRequest.status === 200) {
+            logs.push("✅ Birthdate changed without challenge!");
+            return res.json({ success: true, message: "Birthdate changed successfully!", newBirthdate: { month: birthMonth, day: birthDay, year: birthYear }, logs });
+        }
+        if (changeRequest.status !== 403) {
+            const errText = await changeRequest.text();
+            return res.status(500).json({ success: false, error: `Unexpected response: ${changeRequest.status} - ${errText}`, logs });
+        }
+
+        const challengeId = changeRequest.headers.get("rblx-challenge-id");
+        const challengeType = changeRequest.headers.get("rblx-challenge-type");
+        const challengeMetadataB64 = changeRequest.headers.get("rblx-challenge-metadata");
+
+        if (!challengeId || !challengeType || !challengeMetadataB64) {
+            return res.status(500).json({ success: false, error: "Challenge headers not found.", logs });
+        }
+
+        const step2Meta = JSON.parse(Buffer.from(challengeMetadataB64, "base64").toString("utf8"));
+        const step2UserId = step2Meta.userId;
+        const browserTrackerId = step2Meta.browserTrackerId || "1759714938428001";
+
+        logs.push("✅ Step 2: Challenge triggered");
+        logs.push(`   Challenge ID: ${challengeId}`);
+        logs.push(`   Challenge Type: ${challengeType}`);
+
+        await delay(1000, 1500);
+
+        // STEPS 3-6: Inside browser so ChefScript handles proof-of-work
+        logs.push("🔄 Steps 3-6: Running inside browser (ChefScript)...");
 
         const page = await setupBrowserForRequest(cookie);
 
-        const result = await page.evaluate(async (csrfToken, password, birthMonth, birthDay, birthYear) => {
+        const result = await page.evaluate(async (csrfToken, password, birthMonth, birthDay, birthYear, challengeId, challengeType, step2UserId, browserTrackerId) => {
             const doFetch = async (url, options) => {
                 const resp = await fetch(url, {
                     credentials: "include",
@@ -185,7 +225,6 @@ app.post("/api/change-birthdate", async (req, res) => {
             const browserLogs = [];
             const bLog = (msg) => { browserLogs.push(`[${new Date().toISOString()}] ${msg}`); };
 
-            // Intercept fetch to log rotating-client-service calls
             const origFetch = window.fetch;
             window.fetch = async function(...args) {
                 const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
@@ -200,34 +239,14 @@ app.post("/api/change-birthdate", async (req, res) => {
             };
 
             try {
-                // Debug: check cookie state before step 2
-                const cookieStr = document.cookie;
-                const hasRobloCookie = cookieStr.includes('ROBLOSECURITY');
-                bLog(`Cookie check: has_cookie=${hasRobloCookie}, cookie_count=${cookieStr.split(';').filter(c=>c.trim()).length}, url=${window.location.href}`);
+                bLog(`Cookie check: has_cookie=${document.cookie.includes('ROBLOSECURITY')}, url=${window.location.href}`);
 
-                // Step 2: trigger birthdate
-                bLog("Step 2: triggering birthdate POST");
-                const bd = await doFetch("https://users.roblox.com/v1/birthdate", {
-                    method: "POST",
-                    body: JSON.stringify({ birthMonth, birthDay, birthYear }),
-                });
-                if (bd.status === 200) return { success: true, noChallenge: true };
-                if (bd.status !== 403) return { error: `Step 2 unexpected status ${bd.status}: ${bd.text}` };
-
-                const challengeId = bd.headers["rblx-challenge-id"];
-                const challengeType = bd.headers["rblx-challenge-type"];
-                const challengeMetadataB64 = bd.headers["rblx-challenge-metadata"];
-                if (!challengeId) return { error: "No challenge headers in step 2" };
-
-                const step2Meta = JSON.parse(atob(challengeMetadataB64));
-                const userId = step2Meta.userId;
-                const browserTrackerId = step2Meta.browserTrackerId || "1759714938428001";
-
-                bLog(`Step 2: got ${bd.status}, challengeId=${challengeId}`);
-                // Wait for ChefScript to auto-fire fetch+submit proof
+                // Wait for ChefScript to auto-fire fetch+submit proof for the 403 from step 2
                 bLog("Waiting for ChefScript submit calls...");
                 await new Promise(r => setTimeout(r, 4000));
                 bLog("Wait done, proceeding to step 3");
+
+                const userId = step2UserId;
 
                 // Step 3: continue chef challenge
                 const cont1 = await doFetch("https://apis.roblox.com/challenge/v1/continue", {
@@ -315,7 +334,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     browserLogs,
                 };
             } catch(e) { return { error: e.message, browserLogs }; }
-        }, csrfToken, password, parseInt(birthMonth), parseInt(birthDay), parseInt(birthYear));
+        }, csrfToken, password, parseInt(birthMonth), parseInt(birthDay), parseInt(birthYear), challengeId, challengeType, step2UserId, browserTrackerId);
 
         // Log all browser-side logs to Railway console
         if (result.browserLogs) {
