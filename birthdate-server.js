@@ -17,24 +17,16 @@ let browserPage = null;
 async function getBrowser() {
     if (browser && browserPage) return browserPage;
     console.log("[Browser] Launching...");
-    const proxyServer = process.env.PROXY_URL || "";
-    const proxyArgs = proxyServer ? [`--proxy-server=${proxyServer}`] : [];
     browser = await puppeteer.launch({
         headless: true,
-        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", ...proxyArgs],
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
     });
     browserPage = await browser.newPage();
     await browserPage.setUserAgent(
         "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
     );
 
-    // Authenticate proxy if credentials provided
-    const proxyUser = process.env.PROXY_USER || "";
-    const proxyPass = process.env.PROXY_PASS || "";
-    if (proxyUser && proxyPass) {
-        await browserPage.authenticate({ username: proxyUser, password: proxyPass });
-        console.log("[Browser] Proxy authentication set");
-    }
+
     console.log("[Browser] Loading roblox.com for ChefScript...");
 
     // Log all rotating-client-service calls during warmup
