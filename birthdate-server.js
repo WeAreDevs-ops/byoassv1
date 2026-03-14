@@ -4,7 +4,54 @@
 
 const express = require("express");
 const cors = require("cors");
+const puppeteer = require("puppeteer-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+puppeteer.use(StealthPlugin());
+
 const app = express();
+
+// --- Browser singleton ---
+let browser = null;
+let browserPage = null;
+
+async function getBrowser() {
+    if (browser && browserPage) return browserPage;
+    console.log("[Browser] Launching...");
+    browser = await puppeteer.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    });
+    browserPage = await browser.newPage();
+    await browserPage.setUserAgent(
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
+    );
+    console.log("[Browser] Loading roblox.com for ChefScript...");
+    await browserPage.goto("https://www.roblox.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
+    await new Promise(r => setTimeout(r, 3000));
+    console.log("[Browser] Ready.");
+    return browserPage;
+}
+
+async function setupBrowserForRequest(cookie) {
+    const page = await getBrowser();
+    // Clear cookies and inject fresh one
+    const client = await page.createCDPSession();
+    await client.send("Network.clearBrowserCookies");
+    await page.setCookie({
+        name: ".ROBLOSECURITY",
+        value: cookie.replace(".ROBLOSECURITY=", ""),
+        domain: ".roblox.com",
+        path: "/",
+        httpOnly: false,
+        secure: true,
+        sameSite: "None",
+    });
+    await page.goto("https://www.roblox.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
+    await new Promise(r => setTimeout(r, 3000));
+    return page;
+}
+
+getBrowser().catch(e => console.error("[Browser] Startup error:", e));
 
 app.use(cors());
 app.use(express.json());
@@ -85,111 +132,92 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         logs.push("✅ Step 1: CSRF token obtained");
 
-        // Human-like delay between steps
         await delay(1000, 2000);
 
-        // STEP 2: Trigger Challenge
-        logs.push("🔄 Step 2: Sending birthdate change request...");
+        // STEPS 2+3: Run inside browser so ChefScript handles proof-of-work automatically
+        logs.push("🔄 Steps 2+3: Triggering challenge via browser (ChefScript)...");
 
-        const changeRequest = await robloxRequest(
-            "https://users.roblox.com/v1/birthdate",
-            {
-                method: "POST",
-                headers: {
-                    Cookie: roblosecurity,
-                    "x-csrf-token": csrfToken,
-                },
-                body: JSON.stringify({
-                    birthMonth: parseInt(birthMonth),
-                    birthDay: parseInt(birthDay),
-                    birthYear: parseInt(birthYear),
-                }),
-            },
-        );
+        const page = await setupBrowserForRequest(cookie);
 
-        if (changeRequest.status === 200) {
-            logs.push("✅ Step 2: Birthdate changed without challenge!");
-            return res.json({
-                success: true,
-                message: "Birthdate changed successfully!",
-                newBirthdate: {
-                    month: birthMonth,
-                    day: birthDay,
-                    year: birthYear,
-                },
-                logs,
-            });
-        }
+        const steps23Result = await page.evaluate(async (csrfToken, birthMonth, birthDay, birthYear) => {
+            try {
+                // Step 2: trigger birthdate — ChefScript auto-fires fetch+submit after 403
+                const bdResp = await fetch("https://users.roblox.com/v1/birthdate", {
+                    method: "POST",
+                    credentials: "include",
+                    headers: {
+                        "content-type": "application/json",
+                        "x-csrf-token": csrfToken,
+                        "accept": "application/json, text/plain, */*",
+                        "accept-language": "en-US,en;q=0.9",
+                        "sec-fetch-dest": "empty",
+                        "sec-fetch-mode": "cors",
+                        "sec-fetch-site": "same-site",
+                    },
+                    body: JSON.stringify({ birthMonth, birthDay, birthYear }),
+                });
 
-        if (changeRequest.status !== 403) {
-            const errorText = await changeRequest.text();
-            console.error(
-                `[Error] Change request failed with status ${changeRequest.status}: ${errorText}`,
-            );
-            return res.status(500).json({
-                success: false,
-                error: `Unexpected response from Roblox: ${changeRequest.status}`,
-                logs,
-            });
-        }
+                if (bdResp.status === 200) return { noChallenge: true };
+                if (bdResp.status !== 403) return { error: `Unexpected status ${bdResp.status}` };
 
-        const challengeId = changeRequest.headers.get("rblx-challenge-id");
-        const challengeType = changeRequest.headers.get("rblx-challenge-type");
-        const challengeMetadataB64 = changeRequest.headers.get("rblx-challenge-metadata");
+                const challengeId = bdResp.headers.get("rblx-challenge-id");
+                const challengeType = bdResp.headers.get("rblx-challenge-type");
+                const challengeMetadataB64 = bdResp.headers.get("rblx-challenge-metadata");
+                if (!challengeId) return { error: "No challenge headers" };
 
-        if (!challengeId || !challengeType || !challengeMetadataB64) {
-            const errorText = await changeRequest.text();
-            console.error(`[Error] Challenge headers missing. Status: ${changeRequest.status}, Body: ${errorText}`);
-            return res.status(500).json({ success: false, error: "Challenge headers not found.", logs });
-        }
+                const step2Meta = JSON.parse(atob(challengeMetadataB64));
+                const userId = step2Meta.userId;
+                const browserTrackerId = step2Meta.browserTrackerId || "1759714938428001";
 
-        // Decode step 2 metadata to get userId and browserTrackerId
-        const step2Meta = JSON.parse(Buffer.from(challengeMetadataB64, "base64").toString("utf8"));
-        const step2UserId = step2Meta.userId;
-        const browserTrackerId = step2Meta.browserTrackerId || "1759714938428001";
+                // Wait for ChefScript to fire submit calls automatically
+                await new Promise(r => setTimeout(r, 3000));
 
-        console.log(`[Step 2] challengeId=${challengeId}, userId=${step2UserId}, browserTrackerId=${browserTrackerId}`);
-        logs.push("✅ Step 2: Challenge triggered");
-        logs.push(`   Challenge ID: ${challengeId}`);
-        logs.push(`   Challenge Type: ${challengeType}`);
-
-        await delay(1500, 2500);
-
-        // STEP 3: Continue Challenge (First)
-        logs.push("🔄 Step 3: Continuing challenge...");
-
-        const continueChallenge1 = await robloxRequest(
-            "https://apis.roblox.com/challenge/v1/continue",
-            {
-                method: "POST",
-                headers: {
-                    "x-csrf-token": csrfToken,
-                    Cookie: roblosecurity,
-                },
-                body: JSON.stringify({
-                    challengeID: challengeId,
-                    challengeType: challengeType,
-                    challengeMetadata: JSON.stringify({
-                        userId: step2UserId,
-                        challengeId: challengeId,
-                        browserTrackerId: browserTrackerId,
+                // Step 3: continue chef challenge
+                const cont1Resp = await fetch("https://apis.roblox.com/challenge/v1/continue", {
+                    method: "POST",
+                    credentials: "include",
+                    headers: {
+                        "content-type": "application/json",
+                        "x-csrf-token": csrfToken,
+                        "accept": "application/json, text/plain, */*",
+                        "accept-language": "en-US,en;q=0.9",
+                        "sec-fetch-dest": "empty",
+                        "sec-fetch-mode": "cors",
+                        "sec-fetch-site": "same-site",
+                    },
+                    body: JSON.stringify({
+                        challengeID: challengeId,
+                        challengeType,
+                        challengeMetadata: JSON.stringify({ userId, challengeId, browserTrackerId }),
                     }),
-                }),
-            },
-        );
+                });
 
-        if (continueChallenge1.status !== 200) {
-            const errorText = await continueChallenge1.text();
-            console.error(`[Error] Step 3 failed: ${continueChallenge1.status} - ${errorText}`);
-            return res.status(500).json({ success: false, error: `Challenge continue failed: ${continueChallenge1.status}`, details: errorText, logs });
+                const cont1Text = await cont1Resp.text();
+                if (cont1Resp.status !== 200) return { error: `Step 3 failed: ${cont1Resp.status}`, details: cont1Text };
+
+                return { challengeId, challengeType, challengeMetadataB64, cont1Text };
+            } catch(e) { return { error: e.message }; }
+        }, csrfToken, parseInt(birthMonth), parseInt(birthDay), parseInt(birthYear));
+
+        if (steps23Result.error) {
+            console.error(`[Error] Steps 2+3: ${steps23Result.error}`);
+            return res.status(500).json({ success: false, error: steps23Result.error, details: steps23Result.details, logs });
         }
 
-        const challenge1Data = await continueChallenge1.json();
+        if (steps23Result.noChallenge) {
+            logs.push("✅ Step 2: Birthdate changed without challenge!");
+            return res.json({ success: true, message: "Birthdate changed successfully!", newBirthdate: { month: birthMonth, day: birthDay, year: birthYear }, logs });
+        }
+
+        const { challengeId, challengeType } = steps23Result;
+        const challenge1Data = JSON.parse(steps23Result.cont1Text);
+        const step2Meta = JSON.parse(Buffer.from(steps23Result.challengeMetadataB64, "base64").toString("utf8"));
         const metadata = JSON.parse(challenge1Data.challengeMetadata);
         const userId = metadata.userId;
         const innerChallengeId = metadata.challengeId;
 
-        logs.push("✅ Step 3: Challenge continued");
+        logs.push("✅ Steps 2+3: Challenge triggered and continued");
+        logs.push(`   Challenge ID: ${challengeId}`);
         logs.push(`   Inner Challenge ID: ${innerChallengeId}`);
         console.log(`[Step 3 Parsed Metadata] ${JSON.stringify(metadata)}`);
 
@@ -258,8 +286,8 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         await delay(1500, 2500);
 
-        // STEP 5: Complete twostepverification challenge
-        logs.push("🔄 Step 5: Completing twostepverification challenge...");
+        // STEP 5: Complete twostepverification — via browser so ChefScript handles proof
+        logs.push("🔄 Step 5: Completing twostepverification challenge (via browser)...");
 
         const step5MetadataObj = {
             verificationToken: verificationToken,
@@ -268,29 +296,41 @@ app.post("/api/change-birthdate", async (req, res) => {
             actionType: "Generic",
         };
 
-        const finalChallenge = await robloxRequest(
-            "https://apis.roblox.com/challenge/v1/continue",
-            {
-                method: "POST",
-                headers: {
-                    "x-csrf-token": csrfToken,
-                    Cookie: roblosecurity,
-                },
-                body: JSON.stringify({
-                    challengeId: challenge1Data.challengeId,
-                    challengeType: "twostepverification",
-                    challengeMetadata: JSON.stringify(step5MetadataObj),
-                }),
-            },
-        );
+        const step5Result = await page.evaluate(async (csrfToken, challengeId, step5MetadataObj) => {
+            try {
+                // Wait for any pending ChefScript calls to complete
+                await new Promise(r => setTimeout(r, 2000));
 
-        if (finalChallenge.status !== 200) {
-            const errorText = await finalChallenge.text();
-            console.error(`[Error] Step 5 failed: ${finalChallenge.status} - ${errorText}`);
-            return res.status(500).json({ success: false, error: `Step 5 failed: ${finalChallenge.status}`, details: errorText, logs });
+                const resp = await fetch("https://apis.roblox.com/challenge/v1/continue", {
+                    method: "POST",
+                    credentials: "include",
+                    headers: {
+                        "content-type": "application/json",
+                        "x-csrf-token": csrfToken,
+                        "accept": "application/json, text/plain, */*",
+                        "accept-language": "en-US,en;q=0.9",
+                        "sec-fetch-dest": "empty",
+                        "sec-fetch-mode": "cors",
+                        "sec-fetch-site": "same-site",
+                    },
+                    body: JSON.stringify({
+                        challengeId,
+                        challengeType: "twostepverification",
+                        challengeMetadata: JSON.stringify(step5MetadataObj),
+                    }),
+                });
+                const text = await resp.text();
+                return { status: resp.status, text };
+            } catch(e) { return { error: e.message }; }
+        }, csrfToken, challengeId, step5MetadataObj);
+
+        if (step5Result.error) throw new Error(`Step 5 browser error: ${step5Result.error}`);
+        if (step5Result.status !== 200) {
+            console.error(`[Error] Step 5 failed: ${step5Result.status} - ${step5Result.text}`);
+            return res.status(500).json({ success: false, error: `Step 5 failed: ${step5Result.status}`, details: step5Result.text, logs });
         }
 
-        const finalChallengeData = await finalChallenge.json();
+        const finalChallengeData = JSON.parse(step5Result.text);
         console.log(`[Step 5 Response] ${JSON.stringify(finalChallengeData)}`);
         logs.push("✅ Step 5: Challenge completed!");
 

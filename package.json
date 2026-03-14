@@ -1,14 +1,17 @@
 {
   "name": "roblox-birthdate-changer",
   "version": "1.0.0",
-  "description": "Roblox Birthdate Changer",
+  "description": "Roblox Birthdate Changer with Puppeteer",
   "main": "birthdate-server.js",
   "scripts": {
     "start": "node birthdate-server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "puppeteer": "^22.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
   "engines": {
     "node": ">=18.0.0"
