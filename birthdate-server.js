@@ -298,7 +298,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                 headers: {
                     Cookie: roblosecurity,
                     "x-csrf-token": csrfToken,
-                    "rblx-challenge-id": challenge1Data.challengeId,
+                    "rblx-challenge-id": challengeId,
                     "rblx-challenge-type": "twostepverification",
                     "rblx-challenge-metadata": step6ChallengeMetadata,
                 },
