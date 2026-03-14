@@ -1,125 +1,10 @@
 // birthdate-server.js - Node.js Backend for Roblox Birthdate Changer
-// Install dependencies: npm install express cors puppeteer-extra puppeteer-extra-plugin-stealth
+// Install dependencies: npm install express cors
 // Run: node birthdate-server.js
 
 const express = require("express");
 const cors = require("cors");
-const puppeteer = require("puppeteer-extra");
-const StealthPlugin = require("puppeteer-extra-plugin-stealth");
-puppeteer.use(StealthPlugin());
-
 const app = express();
-
-// --- Browser singleton ---
-let browser = null;
-let browserPage = null;
-
-async function getBrowser() {
-    if (browser && browserPage) return { browser, page: browserPage };
-
-    console.log("[Browser] Launching...");
-    browser = await puppeteer.launch({
-        headless: true,
-        args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-        ],
-    });
-    browserPage = await browser.newPage();
-    await browserPage.setUserAgent(
-        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
-    );
-    // Load roblox.com so ChefScript registers
-    console.log("[Browser] Loading roblox.com for ChefScript...");
-    await browserPage.goto("https://www.roblox.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
-    // Wait for ChefScript to register
-    await new Promise(r => setTimeout(r, 3000));
-    console.log("[Browser] Ready.");
-    return { browser, page: browserPage };
-}
-
-// Run both challenge/v1/continue calls inside the browser in one continuous session
-// This keeps ChefScript's session state alive between both calls
-async function browserChallengeFlow(cookie, csrfToken, step3Body, step5BodyFn) {
-    const { page } = await getBrowser();
-
-    // Inject cookie
-    await page.setCookie({
-        name: ".ROBLOSECURITY",
-        value: cookie.replace(".ROBLOSECURITY=", ""),
-        domain: ".roblox.com",
-        path: "/",
-        httpOnly: false,
-        secure: true,
-        sameSite: "None",
-    });
-
-    const result = await page.evaluate(async (csrfToken, step3Body) => {
-        const doFetch = async (url, body) => {
-            const resp = await fetch(url, {
-                method: "POST",
-                credentials: "include",
-                headers: {
-                    "content-type": "application/json",
-                    "x-csrf-token": csrfToken,
-                    "accept": "application/json, text/plain, */*",
-                    "accept-language": "en-US,en;q=0.9",
-                    "sec-fetch-dest": "empty",
-                    "sec-fetch-mode": "cors",
-                    "sec-fetch-site": "same-site",
-                },
-                body: JSON.stringify(body),
-            });
-            const text = await resp.text();
-            return { status: resp.status, text };
-        };
-
-        // Step 3: chef challenge continue
-        const r3 = await doFetch("https://apis.roblox.com/challenge/v1/continue", step3Body);
-        if (r3.status !== 200) return { error: "step3", status: r3.status, text: r3.text };
-
-        return { step3: r3 };
-    }, csrfToken, step3Body);
-
-    if (result.error) return result;
-
-    // Parse step 3 result in Node.js to get challengeId for step 5
-    const step3Data = JSON.parse(result.step3.text);
-    const step5Body = step5BodyFn(step3Data);
-
-    // Now run step 5 in the same browser page (session still alive)
-    const result2 = await page.evaluate(async (csrfToken, step5Body) => {
-        const doFetch = async (url, body) => {
-            const resp = await fetch(url, {
-                method: "POST",
-                credentials: "include",
-                headers: {
-                    "content-type": "application/json",
-                    "x-csrf-token": csrfToken,
-                    "accept": "application/json, text/plain, */*",
-                    "accept-language": "en-US,en;q=0.9",
-                    "sec-fetch-dest": "empty",
-                    "sec-fetch-mode": "cors",
-                    "sec-fetch-site": "same-site",
-                },
-                body: JSON.stringify(body),
-            });
-            const text = await resp.text();
-            return { status: resp.status, text };
-        };
-
-        const r5 = await doFetch("https://apis.roblox.com/challenge/v1/continue", step5Body);
-        if (r5.status !== 200) return { error: "step5", status: r5.status, text: r5.text };
-
-        return { step5: r5 };
-    }, csrfToken, step5Body);
-
-    return { step3: result.step3, step5: result2.step5, error: result2.error, status: result2.status, text: result2.text };
-}
-
-// Warm up browser on startup
-getBrowser().catch(e => console.error("[Browser] Startup error:", e));
 
 app.use(cors());
 app.use(express.json());
@@ -178,100 +63,96 @@ app.post("/api/change-birthdate", async (req, res) => {
             ? cookie
             : `.ROBLOSECURITY=${cookie}`;
 
-        // STEPS 1+2: Get CSRF from page meta tag + trigger birthdate — all inside browser
-        logs.push("🔄 Steps 1+2: Loading Roblox and triggering challenge (via browser)...");
+        // STEP 1: Get CSRF Token
+        logs.push("🔄 Step 1: Getting CSRF token...");
 
-        const { page } = await getBrowser();
-
-        // Clear all existing cookies first to avoid session conflict from warmup load
-        const client = await page.createCDPSession();
-        await client.send("Network.clearBrowserCookies");
-
-        // Inject cookie then load roblox.com so ChefScript registers
-        await page.setCookie({
-            name: ".ROBLOSECURITY",
-            value: cookie.replace(".ROBLOSECURITY=", ""),
-            domain: ".roblox.com",
-            path: "/",
-            httpOnly: false,
-            secure: true,
-            sameSite: "None",
+        const csrf1 = await robloxRequest("https://users.roblox.com/v1/description", {
+            method: "POST",
+            headers: {
+                Cookie: roblosecurity,
+            },
         });
-        await page.goto("https://www.roblox.com/", { waitUntil: "domcontentloaded", timeout: 20000 });
-        await new Promise(r => setTimeout(r, 2000));
-        console.log("[Browser] Page loaded, ChefScript registered");
 
-        const steps12Result = await page.evaluate(async (birthMonth, birthDay, birthYear, password) => {
-            try {
-                // Step 1: read CSRF token from page meta tag
-                const metaTag = document.querySelector('meta[name="csrf-token"]');
-                const csrfToken = metaTag ? metaTag.getAttribute('data-token') || metaTag.getAttribute('content') : null;
-                if (!csrfToken) return { error: "No CSRF token in page meta", csrfToken: null };
+        const csrfToken = csrf1.headers.get("x-csrf-token");
 
-                // Debug: check if cookie is visible
-                const cookieStr = document.cookie;
-                const hasRobloCookie = cookieStr.includes('.ROBLOSECURITY') || cookieStr.includes('ROBLOSECURITY');
-                const cookieDebug = `cookies_visible=${hasRobloCookie}, cookie_count=${cookieStr.split(';').length}, url=${window.location.href}`;
-
-                // Step 2: trigger birthdate change
-
-                // Step 2: trigger birthdate change
-                // Pass cookie explicitly since credentials:include may not work cross-subdomain
-                const robloCookie = document.cookie;
-                const bdResp = await fetch("https://users.roblox.com/v1/birthdate", {
-                    method: "POST",
-                    credentials: "include",
-                    headers: {
-                        "content-type": "application/json",
-                        "x-csrf-token": csrfToken,
-                        "cookie": robloCookie,
-                        "accept": "application/json, text/plain, */*",
-                        "accept-language": "en-US,en;q=0.9",
-                        "sec-fetch-dest": "empty",
-                        "sec-fetch-mode": "cors",
-                        "sec-fetch-site": "same-site",
-                    },
-                    body: JSON.stringify({ birthMonth, birthDay, birthYear, password }),
-                });
-
-                const bdText = await bdResp.text();
-                const bdHeaders = {};
-                bdResp.headers.forEach((v, k) => { bdHeaders[k] = v; });
-
-                return { csrfToken, bdStatus: bdResp.status, bdText, bdHeaders, cookieDebug };
-            } catch(e) { return { error: e.message }; }
-        }, parseInt(birthMonth), parseInt(birthDay), parseInt(birthYear), password);
-
-        if (steps12Result.error) {
-            return res.status(500).json({ success: false, error: `Browser step 2 error: ${steps12Result.error}`, logs });
-        }
-
-        const csrfToken = steps12Result.csrfToken;
         if (!csrfToken) {
-            return res.status(403).json({ success: false, error: "Failed to get CSRF token from page.", logs });
+            return res.status(403).json({
+                success: false,
+                error: "Failed to get CSRF token. Make sure your cookie is valid.",
+                logs,
+            });
         }
+
         logs.push("✅ Step 1: CSRF token obtained");
-        console.log(`[Cookie Debug] ${steps12Result.cookieDebug}`);
-        logs.push(`   Cookie Debug: ${steps12Result.cookieDebug}`);
 
-        if (steps12Result.bdStatus === 200) {
+        // Human-like delay between steps
+        await delay(1000, 2000);
+
+        // STEP 2: Trigger Challenge
+        logs.push("🔄 Step 2: Sending birthdate change request...");
+
+        const changeRequest = await robloxRequest(
+            "https://users.roblox.com/v1/birthdate",
+            {
+                method: "POST",
+                headers: {
+                    Cookie: roblosecurity,
+                    "x-csrf-token": csrfToken,
+                },
+                body: JSON.stringify({
+                    birthMonth: parseInt(birthMonth),
+                    birthDay: parseInt(birthDay),
+                    birthYear: parseInt(birthYear),
+                    password: password,
+                }),
+            },
+        );
+
+        if (changeRequest.status === 200) {
             logs.push("✅ Step 2: Birthdate changed without challenge!");
-            return res.json({ success: true, message: "Birthdate changed successfully!", newBirthdate: { month: birthMonth, day: birthDay, year: birthYear }, logs });
+            return res.json({
+                success: true,
+                message: "Birthdate changed successfully!",
+                newBirthdate: {
+                    month: birthMonth,
+                    day: birthDay,
+                    year: birthYear,
+                },
+                logs,
+            });
         }
 
-        if (steps12Result.bdStatus !== 403) {
-            console.error(`[Error] Change request failed with status ${steps12Result.bdStatus}: ${steps12Result.bdText}`);
-            return res.status(500).json({ success: false, error: `Unexpected response from Roblox: ${steps12Result.bdStatus}`, logs });
+        if (changeRequest.status !== 403) {
+            const errorText = await changeRequest.text();
+            console.error(
+                `[Error] Change request failed with status ${changeRequest.status}: ${errorText}`,
+            );
+            return res.status(500).json({
+                success: false,
+                error: `Unexpected response from Roblox: ${changeRequest.status}`,
+                logs,
+            });
         }
 
-        const challengeId = steps12Result.bdHeaders["rblx-challenge-id"];
-        const challengeType = steps12Result.bdHeaders["rblx-challenge-type"];
-        const challengeMetadata = steps12Result.bdHeaders["rblx-challenge-metadata"];
+        const challengeId = changeRequest.headers.get("rblx-challenge-id");
+        const challengeType = changeRequest.headers.get("rblx-challenge-type");
+        const challengeMetadata = changeRequest.headers.get("rblx-challenge-metadata");
 
-        console.log(`[Step 2 Response Headers] ${JSON.stringify(steps12Result.bdHeaders)}`);
+        const step2Headers = {};
+        changeRequest.headers.forEach((value, key) => { step2Headers[key] = value; });
+        console.log(`[Step 2 Response Headers] ${JSON.stringify(step2Headers)}`);
+        logs.push(`   Step 2 Response Headers: ${JSON.stringify(step2Headers)}`);
 
         if (!challengeId || !challengeType || !challengeMetadata) {
-            return res.status(500).json({ success: false, error: "Challenge headers not found.", logs });
+            const errorText = await changeRequest.text();
+            console.error(
+                `[Error] Challenge headers missing. Status: ${changeRequest.status}, Body: ${errorText}`,
+            );
+            return res.status(500).json({
+                success: false,
+                error: "Challenge headers not found. Roblox might have blocked the request or changed the API.",
+                logs,
+            });
         }
 
         logs.push("✅ Step 2: Challenge triggered");
@@ -280,50 +161,45 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         await delay(1500, 2500);
 
-        // STEP 3: chef challenge continue — same browser page, ChefScript already registered
-        logs.push("🔄 Step 3: Continuing chef challenge (via browser)...");
+        // STEP 3: Continue Challenge (First)
+        logs.push("🔄 Step 3: Continuing challenge...");
 
-        const step3Body = { challengeId, challengeType, challengeMetadata };
+        const continueChallenge1 = await robloxRequest(
+            "https://apis.roblox.com/challenge/v1/continue",
+            {
+                method: "POST",
+                headers: {
+                    "x-csrf-token": csrfToken,
+                    Cookie: roblosecurity,
+                },
+                body: JSON.stringify({
+                    challengeId,
+                    challengeType,
+                    challengeMetadata,
+                }),
+            },
+        );
 
-        const step3Result = await page.evaluate(async (csrfToken, body) => {
-            try {
-                const resp = await fetch("https://apis.roblox.com/challenge/v1/continue", {
-                    method: "POST",
-                    credentials: "include",
-                    headers: {
-                        "content-type": "application/json",
-                        "x-csrf-token": csrfToken,
-                        "cookie": document.cookie,
-                        "accept": "application/json, text/plain, */*",
-                        "accept-language": "en-US,en;q=0.9",
-                        "sec-fetch-dest": "empty",
-                        "sec-fetch-mode": "cors",
-                        "sec-fetch-site": "same-site",
-                    },
-                    body: JSON.stringify(body),
-                });
-                const text = await resp.text();
-                return { status: resp.status, text };
-            } catch(e) { return { error: e.message }; }
-        }, csrfToken, step3Body);
-
-        if (step3Result.error) throw new Error(`Step 3 browser error: ${step3Result.error}`);
-        if (step3Result.status !== 200) {
-            console.error(`[Error] Step 3 failed: ${step3Result.status} - ${step3Result.text}`);
+        if (continueChallenge1.status !== 200) {
+            const errorText = await continueChallenge1.text();
+            console.error(
+                `[Error] Step 3 failed: ${continueChallenge1.status} - ${errorText}`,
+            );
             return res.status(500).json({
                 success: false,
-                error: `Challenge continue (chef) failed: ${step3Result.status}`,
-                details: step3Result.text,
+                error: `Challenge continue failed: ${continueChallenge1.status}`,
+                details: errorText,
                 logs,
             });
         }
 
-        const challenge1Data = JSON.parse(step3Result.text);
+        const challenge1Data = await continueChallenge1.json();
 
-        logs.push("✅ Step 3: Chef challenge continued");
+        logs.push("✅ Step 3: Challenge continued");
         logs.push(`   New Challenge ID: ${challenge1Data.challengeId}`);
         logs.push(`   New Challenge Type: ${challenge1Data.challengeType}`);
 
+        // Parse metadata to get userId and inner challengeId
         const metadata = JSON.parse(challenge1Data.challengeMetadata);
         const userId = metadata.userId;
         const innerChallengeId = metadata.challengeId;
@@ -331,121 +207,123 @@ app.post("/api/change-birthdate", async (req, res) => {
         logs.push(`   User ID: ${userId}`);
         logs.push(`   Inner Challenge ID: ${innerChallengeId}`);
         console.log(`[Step 3 Parsed Metadata] ${JSON.stringify(metadata)}`);
+        logs.push(`   Full Metadata: ${JSON.stringify(metadata)}`);
 
         await delay(2000, 3500);
 
-        // STEP 4: Verify Password — inside browser so cookie uses browser IP
-        logs.push("🔄 Step 4: Verifying password (via browser)...");
+        // STEP 4: Verify Password
+        logs.push("🔄 Step 4: Verifying password...");
 
-        const step4Result = await page.evaluate(async (csrfToken, userId, innerChallengeId, password) => {
-            try {
-                const resp = await fetch(`https://twostepverification.roblox.com/v1/users/${userId}/challenges/password/verify`, {
-                    method: "POST",
-                    credentials: "include",
-                    headers: {
-                        "content-type": "application/json;charset=UTF-8",
-                        "x-csrf-token": csrfToken,
-                        "cookie": document.cookie,
-                        "accept": "application/json, text/plain, */*",
-                        "accept-language": "en-US,en;q=0.9",
-                        "sec-fetch-dest": "empty",
-                        "sec-fetch-mode": "cors",
-                        "sec-fetch-site": "same-site",
-                    },
-                    body: JSON.stringify({ challengeId: innerChallengeId, actionType: "Generic", code: password }),
-                });
-                const text = await resp.text();
-                return { status: resp.status, text };
-            } catch(e) { return { error: e.message }; }
-        }, csrfToken, userId, innerChallengeId, password);
+        const step4Body = JSON.stringify({
+            challengeId: innerChallengeId,
+            actionType: "Generic",
+            code: password,
+        });
+        console.log(`[Step 4 Request Body] ${step4Body}`);
+        logs.push(`   Step 4 Request Body: ${step4Body}`);
 
-        if (step4Result.error) throw new Error(`Step 4 browser error: ${step4Result.error}`);
+        const verifyPassword = await robloxRequest(
+            `https://twostepverification.roblox.com/v1/users/${userId}/challenges/password/verify`,
+            {
+                method: "POST",
+                headers: {
+                    "x-csrf-token": csrfToken,
+                    Cookie: roblosecurity,
+                },
+                body: step4Body,
+            },
+        );
 
-        console.log(`[Step 4 Response Status] ${step4Result.status}`);
-        console.log(`[Step 4 Response Body] ${step4Result.text}`);
-        logs.push(`   Step 4 Status: ${step4Result.status}`);
-        logs.push(`   Step 4 Response: ${step4Result.text}`);
+        const step4ResponseText = await verifyPassword.text();
+        const step4Headers = {};
+        verifyPassword.headers.forEach((value, key) => { step4Headers[key] = value; });
+        console.log(`[Step 4 Response Status] ${verifyPassword.status}`);
+        console.log(`[Step 4 Response Body] ${step4ResponseText}`);
+        console.log(`[Step 4 Response Headers] ${JSON.stringify(step4Headers)}`);
+        logs.push(`   Step 4 Status: ${verifyPassword.status}`);
+        logs.push(`   Step 4 Response: ${step4ResponseText}`);
+        logs.push(`   Step 4 Headers: ${JSON.stringify(step4Headers)}`);
 
-        if (step4Result.status !== 200) {
-            const errorData = JSON.parse(step4Result.text);
+        if (verifyPassword.status !== 200) {
+            const errorData = JSON.parse(step4ResponseText);
+            console.error(
+                `[Error] Step 4 failed: ${verifyPassword.status} - ${step4ResponseText}`,
+            );
             return res.status(500).json({
                 success: false,
-                error: `Password verification failed: ${errorData.errors?.[0]?.message || step4Result.status}`,
+                error: `Password verification failed: ${errorData.errors?.[0]?.message || verifyPassword.status}`,
                 logs,
             });
         }
 
-        const verifyData = JSON.parse(step4Result.text);
+        const verifyData = JSON.parse(step4ResponseText);
         const verificationToken = verifyData.verificationToken;
 
         if (!verificationToken) {
-            return res.status(500).json({ success: false, error: "No verification token received", logs });
+            return res.status(500).json({
+                success: false,
+                error: "No verification token received",
+                logs,
+            });
         }
 
         logs.push("✅ Step 4: Password verified");
-        logs.push(`   Verification Token: ${verificationToken.substring(0, 20)}...`);
+        logs.push(
+            `   Verification Token: ${verificationToken.substring(0, 20)}...`,
+        );
 
         await delay(1500, 2500);
 
-        // STEP 5: Skipped — password verify (step 4) already unlocks the session server-side
-        // Going directly to step 6 with verificationToken in the challenge headers
-        logs.push("✅ Step 5: Skipped — password verified, proceeding to birthdate change...");
+        // STEP 5: Skipped for now
+        logs.push("⏭ Step 5: Skipped");
 
         await delay(1000, 1500);
 
-        // STEP 6: Retry birthdate request — inside browser so cookie uses browser IP not Railway
-        logs.push("🔄 Step 6: Retrying birthdate change after verification (via browser)...");
+        // STEP 6: Retry birthdate request
+        logs.push("🔄 Step 6: Retrying birthdate change after verification...");
 
-        const step6Meta = {
+        const step6ChallengeMetadata = Buffer.from(JSON.stringify({
             rememberDevice: false,
             actionType: "Generic",
             verificationToken: verificationToken,
             challengeId: innerChallengeId,
-        };
-        const step6ChallengeMetadata = btoa ? btoa(JSON.stringify(step6Meta)) : Buffer.from(JSON.stringify(step6Meta)).toString("base64");
-        logs.push(`   Step 6 Challenge Metadata: ${JSON.stringify(step6Meta)}`);
+        })).toString("base64");
 
-        const step6Result = await page.evaluate(async (csrfToken, outerChallengeId, step6ChallengeMetadata, birthMonth, birthDay, birthYear, password) => {
-            // btoa is available in browser
-            try {
-                const resp = await fetch("https://users.roblox.com/v1/birthdate", {
-                    method: "POST",
-                    credentials: "include",
-                    headers: {
-                        "content-type": "application/json",
-                        "x-csrf-token": csrfToken,
-                        "cookie": document.cookie,
-                        "rblx-challenge-id": outerChallengeId,
-                        "rblx-challenge-type": "twostepverification",
-                        "rblx-challenge-metadata": step6ChallengeMetadata,
-                        "accept": "application/json, text/plain, */*",
-                        "accept-language": "en-US,en;q=0.9",
-                        "sec-fetch-dest": "empty",
-                        "sec-fetch-mode": "cors",
-                        "sec-fetch-site": "same-site",
-                    },
-                    body: JSON.stringify({ birthMonth, birthDay, birthYear, password }),
-                });
-                const text = await resp.text();
-                const headers = {};
-                resp.headers.forEach((v, k) => { headers[k] = v; });
-                return { status: resp.status, text, headers };
-            } catch(e) { return { error: e.message }; }
-        }, csrfToken, challenge1Data.challengeId, btoa(JSON.stringify(step6Meta)), parseInt(birthMonth), parseInt(birthDay), parseInt(birthYear), password);
+        logs.push(`   Step 6 Challenge Metadata (base64): ${step6ChallengeMetadata}`);
 
-        if (step6Result.error) throw new Error(`Step 6 browser error: ${step6Result.error}`);
+        const retryBirthdate = await robloxRequest(
+            "https://users.roblox.com/v1/birthdate",
+            {
+                method: "POST",
+                headers: {
+                    Cookie: roblosecurity,
+                    "x-csrf-token": csrfToken,
+                    "rblx-challenge-id": challenge1Data.challengeId,
+                    "rblx-challenge-type": "twostepverification",
+                    "rblx-challenge-metadata": step6ChallengeMetadata,
+                },
+                body: JSON.stringify({
+                    birthMonth: parseInt(birthMonth),
+                    birthDay: parseInt(birthDay),
+                    birthYear: parseInt(birthYear),
+                }),
+            }
+        );
 
-        if (step6Result.status !== 200) {
-            console.error(`[Error] Step 6 failed: ${step6Result.status} - ${step6Result.text}`);
-            console.log(`[Step 6 Response Headers] ${JSON.stringify(step6Result.headers)}`);
+        if (retryBirthdate.status !== 200) {
+            const errorText = await retryBirthdate.text();
+            const step6Headers = {};
+            retryBirthdate.headers.forEach((value, key) => { step6Headers[key] = value; });
+            console.error(`[Error] Step 6 failed: ${retryBirthdate.status} - ${errorText}`);
+            console.log(`[Step 6 Response Headers] ${JSON.stringify(step6Headers)}`);
             logs.push("❌ Step 6 failed");
-            logs.push(`   Status: ${step6Result.status}`);
-            logs.push(`   Response: ${step6Result.text}`);
-            logs.push(`   Headers: ${JSON.stringify(step6Result.headers)}`);
+            logs.push(`   Status: ${retryBirthdate.status}`);
+            logs.push(`   Response: ${errorText}`);
+            logs.push(`   Headers: ${JSON.stringify(step6Headers)}`);
             return res.status(500).json({
                 success: false,
                 error: "Birthdate change failed after verification",
-                details: step6Result.text,
+                details: errorText,
                 logs,
             });
         }
