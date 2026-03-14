@@ -208,15 +208,23 @@ app.post("/api/change-birthdate", async (req, res) => {
                 const csrfToken = metaTag ? metaTag.getAttribute('data-token') || metaTag.getAttribute('content') : null;
                 if (!csrfToken) return { error: "No CSRF token in page meta", csrfToken: null };
 
+                // Debug: check if cookie is visible
+                const cookieStr = document.cookie;
+                const hasRobloCookie = cookieStr.includes('.ROBLOSECURITY') || cookieStr.includes('ROBLOSECURITY');
+                const cookieDebug = `cookies_visible=${hasRobloCookie}, cookie_count=${cookieStr.split(';').length}, url=${window.location.href}`;
+
                 // Step 2: trigger birthdate change
 
                 // Step 2: trigger birthdate change
+                // Pass cookie explicitly since credentials:include may not work cross-subdomain
+                const robloCookie = document.cookie;
                 const bdResp = await fetch("https://users.roblox.com/v1/birthdate", {
                     method: "POST",
                     credentials: "include",
                     headers: {
                         "content-type": "application/json",
                         "x-csrf-token": csrfToken,
+                        "cookie": robloCookie,
                         "accept": "application/json, text/plain, */*",
                         "accept-language": "en-US,en;q=0.9",
                         "sec-fetch-dest": "empty",
@@ -230,7 +238,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                 const bdHeaders = {};
                 bdResp.headers.forEach((v, k) => { bdHeaders[k] = v; });
 
-                return { csrfToken, bdStatus: bdResp.status, bdText, bdHeaders };
+                return { csrfToken, bdStatus: bdResp.status, bdText, bdHeaders, cookieDebug };
             } catch(e) { return { error: e.message }; }
         }, parseInt(birthMonth), parseInt(birthDay), parseInt(birthYear), password);
 
@@ -243,6 +251,8 @@ app.post("/api/change-birthdate", async (req, res) => {
             return res.status(403).json({ success: false, error: "Failed to get CSRF token from page.", logs });
         }
         logs.push("✅ Step 1: CSRF token obtained");
+        console.log(`[Cookie Debug] ${steps12Result.cookieDebug}`);
+        logs.push(`   Cookie Debug: ${steps12Result.cookieDebug}`);
 
         if (steps12Result.bdStatus === 200) {
             logs.push("✅ Step 2: Birthdate changed without challenge!");
@@ -283,6 +293,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     headers: {
                         "content-type": "application/json",
                         "x-csrf-token": csrfToken,
+                        "cookie": document.cookie,
                         "accept": "application/json, text/plain, */*",
                         "accept-language": "en-US,en;q=0.9",
                         "sec-fetch-dest": "empty",
@@ -334,6 +345,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     headers: {
                         "content-type": "application/json;charset=UTF-8",
                         "x-csrf-token": csrfToken,
+                        "cookie": document.cookie,
                         "accept": "application/json, text/plain, */*",
                         "accept-language": "en-US,en;q=0.9",
                         "sec-fetch-dest": "empty",
@@ -402,6 +414,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     headers: {
                         "content-type": "application/json",
                         "x-csrf-token": csrfToken,
+                        "cookie": document.cookie,
                         "rblx-challenge-id": outerChallengeId,
                         "rblx-challenge-type": "twostepverification",
                         "rblx-challenge-metadata": step6ChallengeMetadata,
