@@ -306,6 +306,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     birthMonth: parseInt(birthMonth),
                     birthDay: parseInt(birthDay),
                     birthYear: parseInt(birthYear),
+                    password: password,
                 }),
             }
         );
