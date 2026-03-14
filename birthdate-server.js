@@ -92,7 +92,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         logs.push("✅ Step 1: CSRF token obtained");
 
         // Human-like delay between steps
-        await delay(1000, 2000);
+        await delay(10000, 10000);
 
         // STEP 2: Trigger Challenge
         logs.push("🔄 Step 2: Sending birthdate change request...");
@@ -167,7 +167,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         logs.push(`   Challenge ID: ${challengeId}`);
         logs.push(`   Challenge Type: ${challengeType}`);
 
-        await delay(1500, 2500);
+        await delay(10000, 10000);
 
         // Decode step 2 metadata to get userId and browserTrackerId
         const step2Meta = JSON.parse(Buffer.from(challengeMetadata, "base64").toString("utf8"));
@@ -208,7 +208,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         logs.push(`   Inner Challenge ID: ${innerChallengeId}`);
         console.log(`[Step 3] ${JSON.stringify(metadata)}`);
 
-        await delay(500, 1000);
+        await delay(10000, 10000);
 
         // UI init calls Roblox makes when showing password modal
         logs.push("🔄 Initializing 2SV UI...");
@@ -223,7 +223,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         });
         logs.push("✅ 2SV UI initialized");
 
-        await delay(500, 1000);
+        await delay(10000, 10000);
 
         // STEP 4: Verify Password
         logs.push("🔄 Step 4: Verifying password...");
@@ -259,7 +259,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         logs.push("✅ Step 4: Password verified");
         logs.push(`   Verification Token: ${verificationToken.substring(0, 20)}...`);
 
-        await delay(500, 1000);
+        await delay(10000, 10000);
 
         // STEP 5: Complete twostepverification challenge
         logs.push("🔄 Step 5: Completing twostepverification...");
@@ -304,7 +304,7 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         logs.push("✅ Step 5: Challenge completed!");
 
-        await delay(500, 1000);
+        await delay(10000, 10000);
 
         // STEP 6: Retry birthdate
         logs.push("🔄 Step 6: Retrying birthdate change...");
