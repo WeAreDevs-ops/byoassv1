@@ -10,6 +10,83 @@ puppeteer.use(StealthPlugin());
 
 const app = express();
 
+// HBA (Hardware Bound Auth) token generation
+// Reverse engineered from Roblox's CoreUtilities.js
+let hbaKeyPair = null;
+
+async function generateAndRegisterHBAKey(csrfToken, cookie) {
+    console.log("[HBA] Generating ECDSA P-256 key pair...");
+    const keyPair = await crypto.subtle.generateKey(
+        { name: "ECDSA", namedCurve: "P-256" },
+        true,
+        ["sign", "verify"]
+    );
+
+    // Export public key as base64
+    const pubKeyBuffer = await crypto.subtle.exportKey("spki", keyPair.publicKey);
+    const pubKeyBase64 = Buffer.from(pubKeyBuffer).toString("base64");
+    const identifier = crypto.randomUUID();
+
+    console.log(`[HBA] Registering public key with identifier: ${identifier}`);
+
+    // Register with Roblox
+    const resp = await fetch("https://apis.roblox.com/rotating-client-service/v1/register", {
+        method: "POST",
+        headers: {
+            ...BROWSER_HEADERS,
+            "content-type": "application/json-patch+json",
+            "x-csrf-token": csrfToken,
+            Cookie: cookie,
+        },
+        body: JSON.stringify({ identifier, key: pubKeyBase64 }),
+    });
+
+    const data = await resp.json();
+    console.log(`[HBA] Register response: ${resp.status} ${JSON.stringify(data)}`);
+
+    if (resp.status !== 200 || !data.robloxApiKeyBase64) {
+        console.error("[HBA] Registration failed");
+        return null;
+    }
+
+    hbaKeyPair = { privateKey: keyPair.privateKey, identifier };
+    console.log("[HBA] Key pair registered successfully");
+    return hbaKeyPair;
+}
+
+async function generateBoundAuthToken(url, method) {
+    if (!hbaKeyPair) return null;
+    try {
+        const timestamp = Math.floor(Date.now() / 1000).toString();
+        const urlObj = new URL(url);
+        const pathname = urlObj.pathname;
+        const upperMethod = method.toUpperCase();
+
+        // p = [u, i, c, f].join("|") where u="" (no body hash used in this call type)
+        const p = ["", timestamp, url, upperMethod].join("|");
+        // h = ["", i, d, f].join("|")
+        const h = ["", timestamp, pathname, upperMethod].join("|");
+
+        const enc = new TextEncoder();
+        const algo = { name: "ECDSA", hash: { name: "SHA-256" } };
+
+        const [sigP, sigH] = await Promise.all([
+            crypto.subtle.sign(algo, hbaKeyPair.privateKey, enc.encode(p)),
+            crypto.subtle.sign(algo, hbaKeyPair.privateKey, enc.encode(h)),
+        ]);
+
+        const v = Buffer.from(sigP).toString("base64");
+        const m = Buffer.from(sigH).toString("base64");
+
+        const token = ["v1", "", timestamp, v, m].join("|");
+        console.log(`[HBA] Generated token for ${method} ${pathname}: v1||${timestamp}|...`);
+        return token;
+    } catch(e) {
+        console.error(`[HBA] Token generation error: ${e.message}`);
+        return null;
+    }
+}
+
 // Browser singleton — only used for step 5
 let browser = null;
 let browserPage = null;
@@ -116,7 +193,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         // STEP 1: Get CSRF Token
         logs.push("🔄 Step 1: Getting CSRF token...");
 
-        const csrf1 = await robloxRequest("https://auth.roblox.com/v2/logout", {
+        const csrf1 = await robloxRequest("https://users.roblox.com/v1/description", {
             method: "POST",
             headers: {
                 Cookie: roblosecurity,
@@ -135,11 +212,19 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         logs.push("✅ Step 1: CSRF token obtained");
 
+        // Register HBA key pair with Roblox
+        logs.push("🔄 Registering HBA key pair...");
+        await generateAndRegisterHBAKey(csrfToken, roblosecurity);
+        logs.push(hbaKeyPair ? "✅ HBA key registered" : "⚠️ HBA key registration failed - continuing without");
+
         // Human-like delay between steps
-        await delay(10000, 10000);
+        await delay(3000, 5000);
 
         // STEP 2: Trigger Challenge
         logs.push("🔄 Step 2: Sending birthdate change request...");
+
+        const step2BoundToken = await generateBoundAuthToken("https://users.roblox.com/v1/birthdate", "POST");
+        logs.push(`   Step 2 HBA token: ${step2BoundToken ? "generated ✅" : "not available ⚠️"}`);
 
         const changeRequest = await robloxRequest(
             "https://users.roblox.com/v1/birthdate",
@@ -151,6 +236,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     "Accept": "application/json, text/plain, */*",
                     "Content-Type": "application/json;charset=utf-8",
                     "traceparent": traceparent,
+                    ...(step2BoundToken ? { "x-bound-auth-token": step2BoundToken } : {}),
                 },
                 body: JSON.stringify({
                     birthMonth: parseInt(birthMonth),
@@ -211,7 +297,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         logs.push(`   Challenge ID: ${challengeId}`);
         logs.push(`   Challenge Type: ${challengeType}`);
 
-        await delay(10000, 10000);
+        await delay(3000, 5000);
 
         // Decode step 2 metadata to get userId and browserTrackerId
         const step2Meta = JSON.parse(Buffer.from(challengeMetadata, "base64").toString("utf8"));
@@ -252,7 +338,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         logs.push(`   Inner Challenge ID: ${innerChallengeId}`);
         console.log(`[Step 3] ${JSON.stringify(metadata)}`);
 
-        await delay(10000, 10000);
+        await delay(3000, 5000);
 
         // UI init calls Roblox makes when showing password modal
         logs.push("🔄 Initializing 2SV UI...");
@@ -267,7 +353,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         });
         logs.push("✅ 2SV UI initialized");
 
-        await delay(10000, 10000);
+        await delay(3000, 5000);
 
         // STEP 4: Verify Password
         logs.push("🔄 Step 4: Verifying password...");
@@ -303,11 +389,10 @@ app.post("/api/change-birthdate", async (req, res) => {
         logs.push("✅ Step 4: Password verified");
         logs.push(`   Verification Token: ${verificationToken.substring(0, 20)}...`);
 
-        await delay(10000, 10000);
+        await delay(3000, 5000);
 
-        // STEP 5: Complete twostepverification via Puppeteer XHR
-        // Angular's XHR interceptor auto-adds x-bound-auth-token
-        logs.push("🔄 Step 5: Completing twostepverification (via browser XHR)...");
+        // STEP 5: Complete twostepverification with HBA token
+        logs.push("🔄 Step 5: Completing twostepverification...");
 
         const step5MetadataObj = {
             verificationToken: verificationToken,
@@ -316,103 +401,53 @@ app.post("/api/change-birthdate", async (req, res) => {
             actionType: "Generic",
         };
 
-        const page = await getBrowser();
+        const step5Url = "https://apis.roblox.com/challenge/v1/continue";
+        const step5BoundToken = await generateBoundAuthToken(step5Url, "POST");
+        logs.push(`   HBA token: ${step5BoundToken ? "generated ✅" : "not available ⚠️"}`);
 
-        // Setup page with cookie and navigate to account settings for Angular init
-        await setupPageForStep5(page, cookie);
+        const finalChallenge = await robloxRequest(
+            step5Url,
+            {
+                method: "POST",
+                headers: {
+                    "x-csrf-token": csrfToken,
+                    Cookie: roblosecurity,
+                    "Accept": "application/json, text/plain, */*",
+                    "Content-Type": "application/json;charset=utf-8",
+                    "traceparent": `00-${traceId}-${Array.from({length:16},()=>Math.floor(Math.random()*16).toString(16)).join('')}-00`,
+                    ...(step5BoundToken ? { "x-bound-auth-token": step5BoundToken } : {}),
+                },
+                body: JSON.stringify({
+                    challengeId: challenge1Data.challengeId,
+                    challengeType: "twostepverification",
+                    challengeMetadata: JSON.stringify(step5MetadataObj),
+                }),
+            },
+        );
 
-        // Use CDP to intercept the actual request headers sent by XHR
-        const cdpClient = await page.createCDPSession();
-        await cdpClient.send("Network.enable");
-        
-        let capturedHeaders = null;
-        cdpClient.on("Network.requestWillBeSentExtraInfo", (params) => {
-            if (params.headers && JSON.stringify(params.headers).includes("challenge/v1/continue")) {
-                capturedHeaders = params.headers;
-            }
-        });
-        cdpClient.on("Network.requestWillBeSent", (params) => {
-            if (params.request.url.includes("challenge/v1/continue")) {
-                capturedHeaders = params.request.headers;
-                console.log(`[Step 5 CDP Headers] ${JSON.stringify(params.request.headers)}`);
-            }
-        });
+        const step5Text = await finalChallenge.text();
+        console.log(`[Step 5] ${finalChallenge.status} ${step5Text}`);
+        logs.push(`   Step 5 Status: ${finalChallenge.status}`);
+        logs.push(`   Step 5 Response: ${step5Text}`);
 
-        const step5Result = await page.evaluate(async (csrfToken, outerChallengeId, step5MetadataObj) => {
-            try {
-                // Try to get x-bound-auth-token from Roblox's own generateBoundAuthToken function
-                let boundAuthToken = null;
-
-                // Find the HBA service in Roblox's Angular/module system
-                // It exposes generateBoundAuthToken which uses the meta tag + IndexedDB
-                const metaTag = document.querySelector('meta[name="hardware-backed-authentication-data"]');
-                console.log('[HBA] meta tag found:', !!metaTag);
-                if (metaTag) {
-                    console.log('[HBA] meta content:', metaTag.content);
-                }
-
-                // Try to find generateBoundAuthToken in the Roblox module system
-                // It's exposed via the webpack/require module registry
-                try {
-                    // Try webpackJsonp or __webpack_require__ approach
-                    const allKeys = Object.getOwnPropertyNames(window);
-                    for (const key of allKeys) {
-                        try {
-                            const obj = window[key];
-                            if (obj && typeof obj === 'object' && typeof obj.generateBoundAuthToken === 'function') {
-                                console.log('[HBA] found on window.' + key);
-                                boundAuthToken = await obj.generateBoundAuthToken();
-                                break;
-                            }
-                        } catch(e) {}
-                    }
-                } catch(e) {
-                    console.log('[HBA] window search error:', e.message);
-                }
-
-                return await new Promise((resolve) => {
-                    const xhr = new XMLHttpRequest();
-                    xhr.open("POST", "https://apis.roblox.com/challenge/v1/continue");
-                    xhr.setRequestHeader("Content-Type", "application/json;charset=utf-8");
-                    xhr.setRequestHeader("Accept", "application/json, text/plain, */*");
-                    xhr.setRequestHeader("x-csrf-token", csrfToken);
-                    if (boundAuthToken) {
-                        xhr.setRequestHeader("x-bound-auth-token", boundAuthToken);
-                        console.log('[HBA] x-bound-auth-token set!');
-                    }
-                    xhr.withCredentials = true;
-                    xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText, hadBoundToken: !!boundAuthToken });
-                    xhr.onerror = () => resolve({ status: 0, text: "XHR error" });
-                    xhr.send(JSON.stringify({
-                        challengeId: outerChallengeId,
-                        challengeType: "twostepverification",
-                        challengeMetadata: JSON.stringify(step5MetadataObj),
-                    }));
-                });
-            } catch(e) {
-                return { status: 0, text: "evaluate error: " + e.message };
-            }
-        }, csrfToken, challenge1Data.challengeId, step5MetadataObj);
-
-        console.log(`[Step 5] ${step5Result.status} ${step5Result.text}`);
-        logs.push(`   Step 5 Status: ${step5Result.status}`);
-        logs.push(`   Step 5 Response: ${step5Result.text}`);
-
-        if (step5Result.status !== 200) {
-            return res.status(500).json({ success: false, error: `Step 5 failed: ${step5Result.status}`, details: step5Result.text, logs });
+        if (finalChallenge.status !== 200) {
+            return res.status(500).json({ success: false, error: `Step 5 failed: ${finalChallenge.status}`, details: step5Text, logs });
         }
-        if (step5Result.text.includes("blocksession")) {
-            return res.status(500).json({ success: false, error: "Step 5 blocked", details: step5Result.text, logs });
+        if (step5Text.includes("blocksession")) {
+            return res.status(500).json({ success: false, error: "Step 5 blocked", details: step5Text, logs });
         }
 
         logs.push("✅ Step 5: Challenge completed!");
 
-        await delay(10000, 10000);
+        await delay(3000, 5000);
 
         // STEP 6: Retry birthdate
         logs.push("🔄 Step 6: Retrying birthdate change...");
 
         const step6ChallengeMetadata = Buffer.from(JSON.stringify(step5MetadataObj)).toString("base64");
+        // Reuse step 2 token for step 6 (same URL, same token in real browser capture)
+        const step6BoundToken = step2BoundToken;
+        logs.push(`   Step 6 HBA token: ${step6BoundToken ? "reused from step 2 ✅" : "not available ⚠️"}`);
 
         const retryBirthdate = await robloxRequest(
             "https://users.roblox.com/v1/birthdate",
@@ -428,6 +463,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     "rblx-challenge-metadata": step6ChallengeMetadata,
                     "x-retry-attempt": "1",
                     "traceparent": traceparent,
+                    ...(step6BoundToken ? { "x-bound-auth-token": step6BoundToken } : {}),
                 },
                 body: JSON.stringify({
                     birthMonth: parseInt(birthMonth),
