@@ -402,11 +402,12 @@ app.post("/api/change-birthdate", async (req, res) => {
                 headless: true,
             });
             const page = await browser.newPage();
-            // Must navigate to domain first before setting cookies
-            await page.goto("https://www.roblox.com", { waitUntil: "domcontentloaded", timeout: 30000 });
+            // Set cookie directly without full page load
+            await page.goto("https://www.roblox.com", { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
             const cookieValue = roblosecurity.replace(".ROBLOSECURITY=", "");
             await page.setCookie({ name: ".ROBLOSECURITY", value: cookieValue, domain: ".roblox.com", path: "/" });
-            await page.goto("https://www.roblox.com/home", { waitUntil: "domcontentloaded", timeout: 30000 });
+            // Short visit just to get RBXEventTrackerV2 set
+            await page.goto("https://www.roblox.com/home", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
             // Extract btid from cookies
             const cookies = await page.cookies("https://www.roblox.com");
             const trackerCookie = cookies.find(c => c.name === "RBXEventTrackerV2");
