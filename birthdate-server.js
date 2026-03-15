@@ -348,13 +348,8 @@ app.post("/api/change-birthdate", async (req, res) => {
         // Decode step 2 metadata to get userId and browserTrackerId
         const step2Meta = JSON.parse(Buffer.from(challengeMetadata, "base64").toString("utf8"));
         const step2UserId = step2Meta.userId;
-        // Extract btid from RBXEventTrackerV2 cookie (real browser uses this, not step2Meta which is "0")
-        let browserTrackerId = step2Meta.browserTrackerId || "0";
-        try {
-            const btidMatch = cookie.match(/RBXEventTrackerV2=[^;]*browserid=(\d+)/);
-            if (btidMatch) browserTrackerId = btidMatch[1];
-            console.log(`[btid] Extracted: ${browserTrackerId}`);
-        } catch(e) {}
+        // realBtid will be populated by Puppeteer, default to "0"
+        let realBtid = "0";
 
         // STEP 3: Continue chef challenge
         logs.push("🔄 Step 3: Continuing chef challenge...");
@@ -398,7 +393,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         await delay(1000, 2000);
 
         // Get real btid from Roblox via Puppeteer
-        let realBtid = browserTrackerId || "0";
+        // realBtid already declared above
         try {
             const puppeteer = require("puppeteer-core");
             const browser = await puppeteer.launch({
@@ -407,7 +402,8 @@ app.post("/api/change-birthdate", async (req, res) => {
                 headless: true,
             });
             const page = await browser.newPage();
-            // Set cookie and visit home page so Roblox sets RBXEventTrackerV2
+            // Must navigate to domain first before setting cookies
+            await page.goto("https://www.roblox.com", { waitUntil: "domcontentloaded", timeout: 30000 });
             const cookieValue = roblosecurity.replace(".ROBLOSECURITY=", "");
             await page.setCookie({ name: ".ROBLOSECURITY", value: cookieValue, domain: ".roblox.com", path: "/" });
             await page.goto("https://www.roblox.com/home", { waitUntil: "domcontentloaded", timeout: 30000 });
