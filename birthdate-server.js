@@ -375,7 +375,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     challengeMetadata: JSON.stringify({
                         userId: step2UserId,
                         challengeId: challengeId,
-                        browserTrackerId: browserTrackerId,
+                        browserTrackerId: realBtid,
                     }),
                 }),
             },
@@ -397,8 +397,8 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         await delay(1000, 2000);
 
-        // CHEF CHALLENGE: Navigate to Roblox account settings and let chef run naturally
-        logs.push("🔄 Chef: Launching Chrome to solve chef challenge...");
+        // Get real btid from Roblox via Puppeteer
+        let realBtid = browserTrackerId || "0";
         try {
             const puppeteer = require("puppeteer-core");
             const browser = await puppeteer.launch({
@@ -406,104 +406,50 @@ app.post("/api/change-birthdate", async (req, res) => {
                 args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
                 headless: true,
             });
-
             const page = await browser.newPage();
-            page.on("console", msg => { if (msg.type() === "error") console.log(`[Chef Page Error] ${msg.text()}`); });
-
-            // Capture submit calls made by the real chef scripts
-            let capturedPayloadV2 = null;
-            let capturedParams = null;
-            let capturedBtid = null;
-
-            await page.setRequestInterception(true);
-            page.on("request", async (req) => {
-                const url = req.url();
-                if (url.includes("rotating-client-service/v1/submit") && req.method() === "POST") {
-                    try {
-                        const body = JSON.parse(req.postData() || "{}");
-                        console.log(`[Chef] Submit intercepted: payloadV2=${body.payloadV2 ? body.payloadV2.length + " chars" : "empty"} challengeId=${body.challengeId}`);
-                        // Only capture if this matches our challengeId
-                        if (body.challengeId === challengeId && body.payloadV2 && body.payloadV2.length > 50) {
-                            capturedPayloadV2 = body.payloadV2;
-                            capturedParams = body.params;
-                            capturedBtid = body.btid;
-                            console.log(`[Chef] ✅ Captured valid payloadV2 (${capturedPayloadV2.length} chars)`);
-                        }
-                    } catch(e) {}
-                    req.continue();
-                } else {
-                    req.continue();
-                }
-            });
-
-            // Set cookie first before any navigation
+            // Set cookie and visit home page so Roblox sets RBXEventTrackerV2
             const cookieValue = roblosecurity.replace(".ROBLOSECURITY=", "");
             await page.setCookie({ name: ".ROBLOSECURITY", value: cookieValue, domain: ".roblox.com", path: "/" });
-
-            // Navigate to account settings - let raven script load naturally
-            await page.goto("https://www.roblox.com/my/account", { waitUntil: "domcontentloaded", timeout: 60000 });
-
-            // Wait for raven/ChefScript environment to initialize
-            await new Promise(resolve => setTimeout(resolve, 5000));
-
-            // Now fetch and execute chef scripts with OUR challengeId
-            // The raven script is already loaded, so scripts will run in proper context
-            await page.evaluate(async (chefChallengeId, scripts, userId, btid) => {
-                console.log("ChefScript available:", typeof window.ChefScript);
-                console.log("ChefScript.thunks:", window.ChefScript ? typeof window.ChefScript.thunks : "N/A");
-
-                // Execute the pre-fetched chef scripts
-                for (const script of scripts) {
-                    try { eval(script); } catch(e) { console.error("Chef script error:", e.message); }
+            await page.goto("https://www.roblox.com/home", { waitUntil: "domcontentloaded", timeout: 30000 });
+            // Extract btid from cookies
+            const cookies = await page.cookies("https://www.roblox.com");
+            const trackerCookie = cookies.find(c => c.name === "RBXEventTrackerV2");
+            if (trackerCookie) {
+                const btidMatch = trackerCookie.value.match(/browserid=(\d+)/);
+                if (btidMatch) {
+                    realBtid = btidMatch[1];
+                    console.log(`[btid] Got real btid from Puppeteer: ${realBtid}`);
                 }
-
-                console.log("After eval, thunks:", window.ChefScript ? window.ChefScript.thunks?.length : "N/A");
-
-                // Run thunks if any
-                if (window.ChefScript?.thunks?.length > 0) {
-                    for (const thunk of [...window.ChefScript.thunks]) {
-                        try { thunk(); } catch(e) { console.error("Thunk error:", e.message); }
-                    }
-                }
-            }, challengeId, chefScripts, step2UserId, browserTrackerId);
-
-            // Wait for async chef submit
-            await new Promise(resolve => setTimeout(resolve, 15000));
+            }
             await browser.close();
+        } catch(e) {
+            console.error(`[btid] Puppeteer error: ${e.message}`);
+        }
 
-            if (capturedPayloadV2) {
-                const submitBody = JSON.stringify({
-                    userId: step2UserId,
-                    challengeId: challengeId,
-                    payloadV2: capturedPayloadV2,
-                    params: capturedParams,
-                    btid: capturedBtid || browserTrackerId,
-                });
-                const submitResp = await robloxRequest(
-                    "https://apis.roblox.com/rotating-client-service/v1/submit",
-                    {
-                        method: "POST",
-                        headers: { "x-csrf-token": csrfToken, Cookie: roblosecurity, "Content-Type": "application/json" },
-                        body: submitBody,
-                    }
-                );
-                console.log(`[Chef] Submit response: ${submitResp.status}`);
-                logs.push("✅ Chef: Real payloadV2 submitted successfully");
-            } else {
-                logs.push("⚠️ Chef: Could not capture payloadV2 for our challengeId");
-                // Submit empty as fallback
+        // Chef submit with empty payloadV2 (needed for flow)
+        try {
+            const preludeResp = await robloxRequest(
+                "https://apis.roblox.com/rotating-client-service/v1/prelude/latest",
+                { method: "GET", headers: { Cookie: roblosecurity } }
+            );
+            const preludeText = await preludeResp.text();
+            const scriptIdentifiers = step2Meta.scriptIdentifiers || [];
+            for (const identifier of scriptIdentifiers) {
                 await robloxRequest(
-                    "https://apis.roblox.com/rotating-client-service/v1/submit",
-                    {
-                        method: "POST",
-                        headers: { "x-csrf-token": csrfToken, Cookie: roblosecurity, "Content-Type": "application/json" },
-                        body: JSON.stringify({ userId: step2UserId, challengeId, payloadV2: "", params: null, btid: browserTrackerId }),
-                    }
+                    `https://apis.roblox.com/rotating-client-service/v1/fetch?challengeId=${challengeId}&identifier=${identifier}`,
+                    { method: "GET", headers: { Cookie: roblosecurity } }
                 );
             }
-        } catch (chefErr) {
-            console.error(`[Chef] Error: ${chefErr.message}`);
-            logs.push(`⚠️ Chef: ${chefErr.message} (continuing...)`);
+            await robloxRequest(
+                "https://apis.roblox.com/rotating-client-service/v1/submit",
+                {
+                    method: "POST",
+                    headers: { "x-csrf-token": csrfToken, Cookie: roblosecurity, "Content-Type": "application/json" },
+                    body: JSON.stringify({ userId: step2UserId, challengeId, payloadV2: "", params: null, btid: realBtid }),
+                }
+            );
+        } catch(e) {
+            console.error(`[Chef] Error: ${e.message}`);
         }
 
         await delay(2000, 3000);
