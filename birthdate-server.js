@@ -428,6 +428,10 @@ app.post("/api/change-birthdate", async (req, res) => {
             });
 
             const page = await browser.newPage();
+
+            // Log page console messages for debugging
+            page.on("console", msg => console.log(`[Chef Page] ${msg.type()}: ${msg.text()}`));
+            page.on("pageerror", err => console.log(`[Chef Page Error] ${err.message}`));
             
             // Capture submit calls
             let capturedPayloadV2 = null;
