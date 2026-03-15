@@ -469,52 +469,34 @@ app.post("/api/change-birthdate", async (req, res) => {
                 path: "/",
             });
 
-            // Set up ChefScript namespace BEFORE page scripts run
-            await page.evaluateOnNewDocument((nonce) => {
-                const thunks = [];
-                window.ChefScript = {
-                    prelude: { nonce },
-                    thunks,
-                    run: function(fn) { try { fn(); } catch(e) {} }
-                };
-                // Protect thunks from being overwritten
-                const origCS = window.ChefScript;
-                Object.defineProperty(window, 'ChefScript', {
-                    get: () => origCS,
-                    set: (val) => {
-                        // Merge new value but keep our thunks
-                        if (val && !val.thunks) val.thunks = origCS.thunks;
-                        if (val && !val.prelude) val.prelude = origCS.prelude;
-                        Object.assign(origCS, val);
-                    },
-                    configurable: true
-                });
-            }, nonce);
+            // Wait for ChefScript to be initialized by the Roblox page
+            await page.waitForFunction(() => window.ChefScript && window.ChefScript.thunks !== undefined, { timeout: 15000 }).catch(() => {
+                console.log("[Chef] ChefScript not initialized by page, setting up manually");
+            });
 
-            // Execute prelude then chef scripts
-            await page.evaluate((prelude, scripts, nonce) => {
-                // Ensure ChefScript is properly set up
+            // Execute chef scripts in the page context where ChefScript is already set up
+            await page.evaluate((scripts, chefChallengeId, chefUserId, chefBtid) => {
+                // Ensure ChefScript.thunks exists
                 if (!window.ChefScript) window.ChefScript = {};
                 if (!window.ChefScript.prelude) window.ChefScript.prelude = {};
-                if (!window.ChefScript.thunks) window.ChefScript.thunks = [];
-                window.ChefScript.prelude.nonce = nonce;
+                if (!Array.isArray(window.ChefScript.thunks)) window.ChefScript.thunks = [];
 
-                // Execute prelude
-                try { eval(prelude); } catch(e) { console.error("Prelude error:", e.message); }
+                console.log("ChefScript.prelude.nonce:", window.ChefScript.prelude.nonce);
+                console.log("ChefScript.thunks count before:", window.ChefScript.thunks.length);
 
                 // Execute chef scripts
                 for (const script of scripts) {
                     try { eval(script); } catch(e) { console.error("Chef script error:", e.message); }
                 }
 
-                // Run all thunks if any
-                if (window.ChefScript.thunks && window.ChefScript.thunks.length > 0) {
-                    console.log("Running " + window.ChefScript.thunks.length + " chef thunks");
-                    for (const thunk of window.ChefScript.thunks) {
-                        try { thunk(); } catch(e) { console.error("Thunk error:", e.message); }
-                    }
+                console.log("ChefScript.thunks count after:", window.ChefScript.thunks.length);
+
+                // Run all thunks
+                const thunksCopy = [...window.ChefScript.thunks];
+                for (const thunk of thunksCopy) {
+                    try { thunk(); } catch(e) { console.error("Thunk error:", e.message); }
                 }
-            }, preludeText, chefScripts, nonce);
+            }, chefScripts, challengeId, step2UserId, browserTrackerId);
 
             // Wait for submit to be intercepted
             await new Promise(resolve => setTimeout(resolve, 12000));
