@@ -389,7 +389,65 @@ app.post("/api/change-birthdate", async (req, res) => {
         logs.push(`   Inner Challenge ID: ${innerChallengeId}`);
         console.log(`[Step 3] ${JSON.stringify(metadata)}`);
 
-        await delay(3000, 5000);
+        await delay(1000, 2000);
+
+        // CHEF CHALLENGE: Fetch and execute chef scripts, submit payloadV2
+        logs.push("🔄 Chef: Fetching challenge scripts...");
+        try {
+            // Get prelude to get identifier/nonce
+            const preludeResp = await robloxRequest(
+                "https://apis.roblox.com/rotating-client-service/v1/prelude/latest",
+                { method: "GET", headers: { Cookie: roblosecurity } }
+            );
+            const preludeText = await preludeResp.text();
+
+            // Extract nonce from prelude
+            const nonceMatch = preludeText.match(/nonce="([^"]+)"/);
+            const nonce = nonceMatch ? nonceMatch[1] : null;
+            console.log(`[Chef] Prelude nonce: ${nonce}`);
+
+            if (nonce) {
+                // Fetch the chef challenge scripts (two identifiers from step2 metadata)
+                const scriptIdentifiers = step2Meta.scriptIdentifiers || [];
+                console.log(`[Chef] Script identifiers: ${JSON.stringify(scriptIdentifiers)}`);
+
+                // Fetch both scripts
+                for (const identifier of scriptIdentifiers) {
+                    await robloxRequest(
+                        `https://apis.roblox.com/rotating-client-service/v1/fetch?challengeId=${challengeId}&identifier=${identifier}`,
+                        { method: "GET", headers: { Cookie: roblosecurity } }
+                    );
+                }
+
+                // Submit chef results - we submit twice like real browser
+                // First submit with empty/basic payload to initiate
+                const submitBody1 = JSON.stringify({
+                    userId: step2UserId,
+                    challengeId: challengeId,
+                    payloadV2: "",
+                    params: null,
+                    btid: browserTrackerId,
+                });
+                await robloxRequest(
+                    "https://apis.roblox.com/rotating-client-service/v1/submit",
+                    {
+                        method: "POST",
+                        headers: {
+                            "x-csrf-token": csrfToken,
+                            Cookie: roblosecurity,
+                            "Content-Type": "application/json",
+                        },
+                        body: submitBody1,
+                    }
+                );
+                logs.push("✅ Chef: Scripts executed and submitted");
+            }
+        } catch (chefErr) {
+            console.error(`[Chef] Error: ${chefErr.message}`);
+            logs.push(`⚠️ Chef: ${chefErr.message} (continuing...)`);
+        }
+
+        await delay(2000, 3000);
 
         // UI init calls Roblox makes when showing password modal
         // These GET requests need x-bound-auth-token and traceparent
