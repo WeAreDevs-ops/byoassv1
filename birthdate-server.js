@@ -122,6 +122,9 @@ const BROWSER_HEADERS = {
 // All requests via plain Node.js fetch
 async function robloxRequest(url, options = {}) {
     console.log(`[Roblox Request] ${options.method || "GET"} ${url}`);
+    // Debug: log if cookie is present
+    const hasCookie = options.headers && Object.keys(options.headers).some(k => k.toLowerCase() === 'cookie');
+    console.log(`[Debug] Has cookie: ${hasCookie}, headers: ${JSON.stringify(Object.keys(options.headers || {}))}`);
 
     const headers = { ...BROWSER_HEADERS, ...options.headers };
     const method = options.method || "GET";
