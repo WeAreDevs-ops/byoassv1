@@ -348,7 +348,13 @@ app.post("/api/change-birthdate", async (req, res) => {
         // Decode step 2 metadata to get userId and browserTrackerId
         const step2Meta = JSON.parse(Buffer.from(challengeMetadata, "base64").toString("utf8"));
         const step2UserId = step2Meta.userId;
-        const browserTrackerId = step2Meta.browserTrackerId || "1759714938428001";
+        // Extract btid from RBXEventTrackerV2 cookie (real browser uses this, not step2Meta which is "0")
+        let browserTrackerId = step2Meta.browserTrackerId || "0";
+        try {
+            const btidMatch = cookie.match(/RBXEventTrackerV2=[^;]*browserid=(\d+)/);
+            if (btidMatch) browserTrackerId = btidMatch[1];
+            console.log(`[btid] Extracted: ${browserTrackerId}`);
+        } catch(e) {}
 
         // STEP 3: Continue chef challenge
         logs.push("🔄 Step 3: Continuing chef challenge...");
@@ -430,15 +436,38 @@ app.post("/api/change-birthdate", async (req, res) => {
                 }
             });
 
-            // Inject cookie and navigate to account settings
-            await page.goto("https://www.roblox.com/home", { waitUntil: "domcontentloaded", timeout: 60000 });
+            // Set cookie first before any navigation
             const cookieValue = roblosecurity.replace(".ROBLOSECURITY=", "");
             await page.setCookie({ name: ".ROBLOSECURITY", value: cookieValue, domain: ".roblox.com", path: "/" });
 
-            // Navigate to account settings where birthdate change triggers chef
-            await page.goto("https://www.roblox.com/my/account", { waitUntil: "networkidle2", timeout: 60000 });
+            // Navigate to account settings - let raven script load naturally
+            await page.goto("https://www.roblox.com/my/account", { waitUntil: "domcontentloaded", timeout: 60000 });
 
-            // Wait for chef submit with our challengeId
+            // Wait for raven/ChefScript environment to initialize
+            await new Promise(resolve => setTimeout(resolve, 5000));
+
+            // Now fetch and execute chef scripts with OUR challengeId
+            // The raven script is already loaded, so scripts will run in proper context
+            await page.evaluate(async (chefChallengeId, scripts, userId, btid) => {
+                console.log("ChefScript available:", typeof window.ChefScript);
+                console.log("ChefScript.thunks:", window.ChefScript ? typeof window.ChefScript.thunks : "N/A");
+
+                // Execute the pre-fetched chef scripts
+                for (const script of scripts) {
+                    try { eval(script); } catch(e) { console.error("Chef script error:", e.message); }
+                }
+
+                console.log("After eval, thunks:", window.ChefScript ? window.ChefScript.thunks?.length : "N/A");
+
+                // Run thunks if any
+                if (window.ChefScript?.thunks?.length > 0) {
+                    for (const thunk of [...window.ChefScript.thunks]) {
+                        try { thunk(); } catch(e) { console.error("Thunk error:", e.message); }
+                    }
+                }
+            }, challengeId, chefScripts, step2UserId, browserTrackerId);
+
+            // Wait for async chef submit
             await new Promise(resolve => setTimeout(resolve, 15000));
             await browser.close();
 
