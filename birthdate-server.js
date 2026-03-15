@@ -391,44 +391,104 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         await delay(1000, 2000);
 
-        // CHEF CHALLENGE: Fetch and execute chef scripts, submit payloadV2
-        logs.push("🔄 Chef: Fetching challenge scripts...");
+        // CHEF CHALLENGE: Execute chef scripts in real Chrome via Puppeteer
+        logs.push("🔄 Chef: Launching Chrome to execute challenge scripts...");
         try {
-            // Get prelude to get identifier/nonce
+            const puppeteer = require("puppeteer-core");
+            
+            // Get prelude
             const preludeResp = await robloxRequest(
                 "https://apis.roblox.com/rotating-client-service/v1/prelude/latest",
                 { method: "GET", headers: { Cookie: roblosecurity } }
             );
             const preludeText = await preludeResp.text();
-
-            // Extract nonce from prelude
             const nonceMatch = preludeText.match(/nonce="([^"]+)"/);
             const nonce = nonceMatch ? nonceMatch[1] : null;
             console.log(`[Chef] Prelude nonce: ${nonce}`);
 
-            if (nonce) {
-                // Fetch the chef challenge scripts (two identifiers from step2 metadata)
-                const scriptIdentifiers = step2Meta.scriptIdentifiers || [];
-                console.log(`[Chef] Script identifiers: ${JSON.stringify(scriptIdentifiers)}`);
+            // Fetch both chef scripts
+            const scriptIdentifiers = step2Meta.scriptIdentifiers || [];
+            const chefScripts = [];
+            for (const identifier of scriptIdentifiers) {
+                const scriptResp = await robloxRequest(
+                    `https://apis.roblox.com/rotating-client-service/v1/fetch?challengeId=${challengeId}&identifier=${identifier}`,
+                    { method: "GET", headers: { Cookie: roblosecurity } }
+                );
+                const scriptB64 = await scriptResp.text();
+                const scriptCode = Buffer.from(scriptB64, "base64").toString("utf8");
+                chefScripts.push(scriptCode);
+                console.log(`[Chef] Fetched script ${identifier.substring(0,8)}... (${scriptCode.length} bytes)`);
+            }
 
-                // Fetch both scripts
-                for (const identifier of scriptIdentifiers) {
-                    await robloxRequest(
-                        `https://apis.roblox.com/rotating-client-service/v1/fetch?challengeId=${challengeId}&identifier=${identifier}`,
-                        { method: "GET", headers: { Cookie: roblosecurity } }
-                    );
+            // Launch Chrome and execute scripts
+            const browser = await puppeteer.launch({
+                executablePath: "/usr/bin/google-chrome-stable",
+                args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
+                headless: true,
+            });
+
+            const page = await browser.newPage();
+            
+            // Capture submit calls
+            let capturedPayloadV2 = null;
+            let capturedParams = null;
+
+            await page.setRequestInterception(true);
+            page.on("request", async (req) => {
+                if (req.url().includes("rotating-client-service/v1/submit") && req.method() === "POST") {
+                    try {
+                        const body = JSON.parse(req.postData());
+                        if (body.payloadV2 && body.payloadV2.length > 10) {
+                            capturedPayloadV2 = body.payloadV2;
+                            capturedParams = body.params;
+                            console.log(`[Chef] Captured payloadV2 (${capturedPayloadV2.length} chars)`);
+                        }
+                    } catch(e) {}
+                    req.continue();
+                } else {
+                    req.continue();
                 }
+            });
 
-                // Submit chef results - we submit twice like real browser
-                // First submit with empty/basic payload to initiate
-                const submitBody1 = JSON.stringify({
+            // Set cookie
+            await page.setCookie({
+                name: ".ROBLOSECURITY",
+                value: roblosecurity.replace(".ROBLOSECURITY=", ""),
+                domain: ".roblox.com",
+            });
+
+            // Set up ChefScript namespace and execute scripts
+            await page.goto("https://www.roblox.com/my/account", { 
+                waitUntil: "domcontentloaded",
+                timeout: 30000 
+            });
+
+            // Execute prelude then chef scripts
+            await page.evaluate((prelude, scripts, challengeIdArg, userIdArg, btidArg) => {
+                // Ensure ChefScript namespace
+                if (!window.ChefScript) {
+                    window.ChefScript = { prelude: {}, thunks: [] };
+                }
+                eval(prelude);
+                for (const script of scripts) {
+                    try { eval(script); } catch(e) { console.error("Chef script error:", e.message); }
+                }
+            }, preludeText, chefScripts, challengeId, step2UserId, browserTrackerId);
+
+            // Wait for submit to be called
+            await new Promise(resolve => setTimeout(resolve, 8000));
+            await browser.close();
+
+            if (capturedPayloadV2) {
+                // Submit with real payloadV2
+                const submitBody = JSON.stringify({
                     userId: step2UserId,
                     challengeId: challengeId,
-                    payloadV2: "",
-                    params: null,
+                    payloadV2: capturedPayloadV2,
+                    params: capturedParams,
                     btid: browserTrackerId,
                 });
-                await robloxRequest(
+                const submitResp = await robloxRequest(
                     "https://apis.roblox.com/rotating-client-service/v1/submit",
                     {
                         method: "POST",
@@ -437,10 +497,21 @@ app.post("/api/change-birthdate", async (req, res) => {
                             Cookie: roblosecurity,
                             "Content-Type": "application/json",
                         },
-                        body: submitBody1,
+                        body: submitBody,
                     }
                 );
-                logs.push("✅ Chef: Scripts executed and submitted");
+                console.log(`[Chef] Submit response: ${submitResp.status}`);
+                logs.push("✅ Chef: Real payloadV2 submitted successfully");
+            } else {
+                logs.push("⚠️ Chef: Could not capture payloadV2, submitting empty");
+                await robloxRequest(
+                    "https://apis.roblox.com/rotating-client-service/v1/submit",
+                    {
+                        method: "POST",
+                        headers: { "x-csrf-token": csrfToken, Cookie: roblosecurity, "Content-Type": "application/json" },
+                        body: JSON.stringify({ userId: step2UserId, challengeId, payloadV2: "", params: null, btid: browserTrackerId }),
+                    }
+                );
             }
         } catch (chefErr) {
             console.error(`[Chef] Error: ${chefErr.message}`);
