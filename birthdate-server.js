@@ -407,33 +407,41 @@ app.post("/api/change-birthdate", async (req, res) => {
             });
             console.log(`[Chef] Page CSRF: ${pageCsrf ? "got" : "empty"}`);
 
-            // Trigger birthdate POST inside page - capture 403 challenge headers
-            // Chef scripts will auto-trigger after the 403 and handle both submits
+            // Trigger birthdate POST via Angular $http - this goes through Roblox's interceptor
+            // which detects the 403 + chef challenge and auto-triggers chef scripts
             const capturedChallenge = await page.evaluate(async (month, day, year, csrf) => {
-                console.log("Triggering birthdate POST inside page...");
+                console.log("Triggering birthdate POST via Angular $http...");
                 try {
-                    const resp = await fetch("https://users.roblox.com/v1/birthdate", {
-                        method: "POST",
-                        credentials: "include",
-                        headers: {
-                            "Content-Type": "application/json;charset=UTF-8",
-                            "x-csrf-token": csrf
-                        },
-                        body: JSON.stringify({ birthMonth: month, birthDay: day, birthYear: year })
-                    });
-                    console.log("Birthdate POST status:", resp.status);
-                    if (resp.status === 403) {
-                        return {
-                            challengeId: resp.headers.get("rblx-challenge-id"),
-                            challengeType: resp.headers.get("rblx-challenge-type"),
-                            challengeMetadata: resp.headers.get("rblx-challenge-metadata")
-                        };
+                    // Try Angular $http first (goes through interceptor that triggers chef)
+                    const injector = angular.element(document.body).injector();
+                    if (injector) {
+                        const $http = injector.get("$http");
+                        const $rootScope = injector.get("$rootScope");
+                        return new Promise((resolve) => {
+                            $http({
+                                method: "POST",
+                                url: "https://users.roblox.com/v1/birthdate",
+                                data: { birthMonth: month, birthDay: day, birthYear: year },
+                                headers: { "Content-Type": "application/json;charset=UTF-8", "X-CSRF-TOKEN": csrf }
+                            }).then(resp => {
+                                console.log("Birthdate POST success:", resp.status);
+                                resolve(null);
+                            }).catch(err => {
+                                console.log("Birthdate POST error status:", err.status);
+                                // 403 is expected - chef scripts auto-trigger from here
+                                resolve({
+                                    challengeId: err.headers("rblx-challenge-id"),
+                                    challengeType: err.headers("rblx-challenge-type"),
+                                    challengeMetadata: err.headers("rblx-challenge-metadata")
+                                });
+                            });
+                            $rootScope.$apply();
+                        });
                     }
-                    return null;
                 } catch(e) {
-                    console.error("Birthdate POST error:", e.message);
-                    return null;
+                    console.error("Angular $http error:", e.message);
                 }
+                return null;
             }, birthMonth, birthDay, birthYear, pageCsrf || csrfToken);
 
             if (capturedChallenge && capturedChallenge.challengeId) {
