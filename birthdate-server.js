@@ -391,36 +391,10 @@ app.post("/api/change-birthdate", async (req, res) => {
 
         await delay(1000, 2000);
 
-        // CHEF CHALLENGE: Execute chef scripts in real Chrome via Puppeteer
-        logs.push("🔄 Chef: Launching Chrome to execute challenge scripts...");
+        // CHEF CHALLENGE: Navigate to Roblox account settings and let chef run naturally
+        logs.push("🔄 Chef: Launching Chrome to solve chef challenge...");
         try {
             const puppeteer = require("puppeteer-core");
-            
-            // Get prelude
-            const preludeResp = await robloxRequest(
-                "https://apis.roblox.com/rotating-client-service/v1/prelude/latest",
-                { method: "GET", headers: { Cookie: roblosecurity } }
-            );
-            const preludeText = await preludeResp.text();
-            const nonceMatch = preludeText.match(/nonce="([^"]+)"/);
-            const nonce = nonceMatch ? nonceMatch[1] : null;
-            console.log(`[Chef] Prelude nonce: ${nonce}`);
-
-            // Fetch both chef scripts
-            const scriptIdentifiers = step2Meta.scriptIdentifiers || [];
-            const chefScripts = [];
-            for (const identifier of scriptIdentifiers) {
-                const scriptResp = await robloxRequest(
-                    `https://apis.roblox.com/rotating-client-service/v1/fetch?challengeId=${challengeId}&identifier=${identifier}`,
-                    { method: "GET", headers: { Cookie: roblosecurity } }
-                );
-                const scriptB64 = await scriptResp.text();
-                const scriptCode = Buffer.from(scriptB64, "base64").toString("utf8");
-                chefScripts.push(scriptCode);
-                console.log(`[Chef] Fetched script ${identifier.substring(0,8)}... (${scriptCode.length} bytes)`);
-            }
-
-            // Launch Chrome and execute scripts
             const browser = await puppeteer.launch({
                 executablePath: "/usr/bin/google-chrome-stable",
                 args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
@@ -428,24 +402,26 @@ app.post("/api/change-birthdate", async (req, res) => {
             });
 
             const page = await browser.newPage();
+            page.on("console", msg => { if (msg.type() === "error") console.log(`[Chef Page Error] ${msg.text()}`); });
 
-            // Log page console messages for debugging
-            page.on("console", msg => console.log(`[Chef Page] ${msg.type()}: ${msg.text()}`));
-            page.on("pageerror", err => console.log(`[Chef Page Error] ${err.message}`));
-            
-            // Capture submit calls
+            // Capture submit calls made by the real chef scripts
             let capturedPayloadV2 = null;
             let capturedParams = null;
+            let capturedBtid = null;
 
             await page.setRequestInterception(true);
             page.on("request", async (req) => {
-                if (req.url().includes("rotating-client-service/v1/submit") && req.method() === "POST") {
+                const url = req.url();
+                if (url.includes("rotating-client-service/v1/submit") && req.method() === "POST") {
                     try {
-                        const body = JSON.parse(req.postData());
-                        if (body.payloadV2 && body.payloadV2.length > 10) {
+                        const body = JSON.parse(req.postData() || "{}");
+                        console.log(`[Chef] Submit intercepted: payloadV2=${body.payloadV2 ? body.payloadV2.length + " chars" : "empty"} challengeId=${body.challengeId}`);
+                        // Only capture if this matches our challengeId
+                        if (body.challengeId === challengeId && body.payloadV2 && body.payloadV2.length > 50) {
                             capturedPayloadV2 = body.payloadV2;
                             capturedParams = body.params;
-                            console.log(`[Chef] Captured payloadV2 (${capturedPayloadV2.length} chars)`);
+                            capturedBtid = body.btid;
+                            console.log(`[Chef] ✅ Captured valid payloadV2 (${capturedPayloadV2.length} chars)`);
                         }
                     } catch(e) {}
                     req.continue();
@@ -454,83 +430,39 @@ app.post("/api/change-birthdate", async (req, res) => {
                 }
             });
 
-            // Set cookie first on roblox domain
-            await page.goto("https://www.roblox.com/home", { 
-                waitUntil: "domcontentloaded",
-                timeout: 60000 
-            });
-
-            // Inject cookie
+            // Inject cookie and navigate to account settings
+            await page.goto("https://www.roblox.com/home", { waitUntil: "domcontentloaded", timeout: 60000 });
             const cookieValue = roblosecurity.replace(".ROBLOSECURITY=", "");
-            await page.setCookie({
-                name: ".ROBLOSECURITY",
-                value: cookieValue,
-                domain: ".roblox.com",
-                path: "/",
-            });
+            await page.setCookie({ name: ".ROBLOSECURITY", value: cookieValue, domain: ".roblox.com", path: "/" });
 
-            // Wait for ChefScript to be initialized by the Roblox page
-            await page.waitForFunction(() => window.ChefScript && window.ChefScript.thunks !== undefined, { timeout: 15000 }).catch(() => {
-                console.log("[Chef] ChefScript not initialized by page, setting up manually");
-            });
+            // Navigate to account settings where birthdate change triggers chef
+            await page.goto("https://www.roblox.com/my/account", { waitUntil: "networkidle2", timeout: 60000 });
 
-            // Execute prelude + chef scripts in the page context
-            await page.evaluate((prelude, scripts) => {
-                // Ensure ChefScript namespace is fully set up
-                if (!window.ChefScript) window.ChefScript = {};
-                if (!window.ChefScript.prelude) window.ChefScript.prelude = {};
-                if (!Array.isArray(window.ChefScript.thunks)) window.ChefScript.thunks = [];
-
-                // Run prelude first to set nonce and other properties
-                try { eval(prelude); } catch(e) { console.error("Prelude error:", e.message); }
-                
-                console.log("ChefScript.prelude.nonce:", window.ChefScript.prelude.nonce);
-                console.log("ChefScript keys:", Object.keys(window.ChefScript.prelude));
-                console.log("ChefScript.thunks count before:", window.ChefScript.thunks.length);
-
-                // Execute chef scripts
-                for (const script of scripts) {
-                    try { eval(script); } catch(e) { console.error("Chef script error:", e.message); }
-                }
-
-                console.log("ChefScript.thunks count after:", window.ChefScript.thunks.length);
-
-                // Run all thunks
-                const thunksCopy = [...window.ChefScript.thunks];
-                for (const thunk of thunksCopy) {
-                    try { thunk(); } catch(e) { console.error("Thunk error:", e.message); }
-                }
-            }, preludeText, chefScripts);
-
-            // Wait for submit to be intercepted
-            await new Promise(resolve => setTimeout(resolve, 12000));
+            // Wait for chef submit with our challengeId
+            await new Promise(resolve => setTimeout(resolve, 15000));
             await browser.close();
 
             if (capturedPayloadV2) {
-                // Submit with real payloadV2
                 const submitBody = JSON.stringify({
                     userId: step2UserId,
                     challengeId: challengeId,
                     payloadV2: capturedPayloadV2,
                     params: capturedParams,
-                    btid: browserTrackerId,
+                    btid: capturedBtid || browserTrackerId,
                 });
                 const submitResp = await robloxRequest(
                     "https://apis.roblox.com/rotating-client-service/v1/submit",
                     {
                         method: "POST",
-                        headers: {
-                            "x-csrf-token": csrfToken,
-                            Cookie: roblosecurity,
-                            "Content-Type": "application/json",
-                        },
+                        headers: { "x-csrf-token": csrfToken, Cookie: roblosecurity, "Content-Type": "application/json" },
                         body: submitBody,
                     }
                 );
                 console.log(`[Chef] Submit response: ${submitResp.status}`);
                 logs.push("✅ Chef: Real payloadV2 submitted successfully");
             } else {
-                logs.push("⚠️ Chef: Could not capture payloadV2, submitting empty");
+                logs.push("⚠️ Chef: Could not capture payloadV2 for our challengeId");
+                // Submit empty as fallback
                 await robloxRequest(
                     "https://apis.roblox.com/rotating-client-service/v1/submit",
                     {
