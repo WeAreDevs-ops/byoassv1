@@ -450,28 +450,28 @@ app.post("/api/change-birthdate", async (req, res) => {
                 }
             });
 
-            // Use blank page - no navigation timeout issues
-            await page.goto("about:blank");
-
-            // Set cookie for roblox domain
-            await page.setCookie({
-                name: ".ROBLOSECURITY",
-                value: roblosecurity.replace(".ROBLOSECURITY=", ""),
-                domain: ".roblox.com",
-                url: "https://www.roblox.com",
+            // Set cookie first on roblox domain
+            await page.goto("https://www.roblox.com/home", { 
+                waitUntil: "domcontentloaded",
+                timeout: 60000 
             });
 
-            // Execute prelude then chef scripts with mocked environment
-            await page.evaluate((prelude, scripts, challengeIdArg, userIdArg, btidArg, nonce) => {
-                // Mock minimum required browser environment
-                window.Roblox = window.Roblox || {};
-                window.angular = window.angular || { element: () => ({}) };
-                window.jQuery = window.jQuery || (() => ({}));
-                window.ChefScript = { 
-                    prelude: { nonce },
-                    thunks: [],
-                    run: function(fn) { try { fn(); } catch(e) {} }
-                };
+            // Inject cookie
+            const cookieValue = roblosecurity.replace(".ROBLOSECURITY=", "");
+            await page.setCookie({
+                name: ".ROBLOSECURITY",
+                value: cookieValue,
+                domain: ".roblox.com",
+                path: "/",
+            });
+
+            // Execute prelude then chef scripts
+            await page.evaluate((prelude, scripts, nonce) => {
+                // Set up ChefScript namespace
+                if (!window.ChefScript) {
+                    window.ChefScript = { prelude: {}, thunks: [] };
+                }
+                window.ChefScript.prelude.nonce = nonce;
 
                 // Execute prelude
                 try { eval(prelude); } catch(e) { console.error("Prelude error:", e.message); }
@@ -480,10 +480,10 @@ app.post("/api/change-birthdate", async (req, res) => {
                 for (const script of scripts) {
                     try { eval(script); } catch(e) { console.error("Chef script error:", e.message); }
                 }
-            }, preludeText, chefScripts, challengeId, step2UserId, browserTrackerId, nonce);
+            }, preludeText, chefScripts, nonce);
 
             // Wait for submit to be intercepted
-            await new Promise(resolve => setTimeout(resolve, 10000));
+            await new Promise(resolve => setTimeout(resolve, 12000));
             await browser.close();
 
             if (capturedPayloadV2) {
