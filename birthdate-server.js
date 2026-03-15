@@ -474,14 +474,18 @@ app.post("/api/change-birthdate", async (req, res) => {
                 console.log("[Chef] ChefScript not initialized by page, setting up manually");
             });
 
-            // Execute chef scripts in the page context where ChefScript is already set up
-            await page.evaluate((scripts, chefChallengeId, chefUserId, chefBtid) => {
-                // Ensure ChefScript.thunks exists
+            // Execute prelude + chef scripts in the page context
+            await page.evaluate((prelude, scripts) => {
+                // Ensure ChefScript namespace is fully set up
                 if (!window.ChefScript) window.ChefScript = {};
                 if (!window.ChefScript.prelude) window.ChefScript.prelude = {};
                 if (!Array.isArray(window.ChefScript.thunks)) window.ChefScript.thunks = [];
 
+                // Run prelude first to set nonce and other properties
+                try { eval(prelude); } catch(e) { console.error("Prelude error:", e.message); }
+                
                 console.log("ChefScript.prelude.nonce:", window.ChefScript.prelude.nonce);
+                console.log("ChefScript keys:", Object.keys(window.ChefScript.prelude));
                 console.log("ChefScript.thunks count before:", window.ChefScript.thunks.length);
 
                 // Execute chef scripts
@@ -496,7 +500,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                 for (const thunk of thunksCopy) {
                     try { thunk(); } catch(e) { console.error("Thunk error:", e.message); }
                 }
-            }, chefScripts, challengeId, step2UserId, browserTrackerId);
+            }, preludeText, chefScripts);
 
             // Wait for submit to be intercepted
             await new Promise(resolve => setTimeout(resolve, 12000));
