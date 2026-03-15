@@ -112,6 +112,9 @@ const BROWSER_HEADERS = {
     "Referer": "https://www.roblox.com/",
     "sec-ch-ua": '"Chromium";v="137", "Not/A)Brand";v="24"',
     "sec-ch-ua-mobile": "?1",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-site",
     "sec-ch-ua-platform": '"Android"',
     "sec-fetch-dest": "empty",
     "sec-fetch-mode": "cors",
@@ -281,7 +284,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     Cookie: roblosecurity,
                     "x-csrf-token": csrfToken,
                     "Accept": "application/json, text/plain, */*",
-                    "Content-Type": "application/json;charset=utf-8",
+                    "Content-Type": "application/json;charset=UTF-8",
                     "traceparent": traceparent,
                     ...(step2BoundToken ? { "x-bound-auth-token": step2BoundToken } : {}),
                 },
@@ -354,7 +357,12 @@ app.post("/api/change-birthdate", async (req, res) => {
             "https://apis.roblox.com/challenge/v1/continue",
             {
                 method: "POST",
-                headers: { "x-csrf-token": csrfToken, Cookie: roblosecurity },
+                headers: {
+                    "x-csrf-token": csrfToken,
+                    Cookie: roblosecurity,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/plain, */*",
+                },
                 body: JSON.stringify({
                     challengeID: challengeId,
                     challengeType,
@@ -384,15 +392,19 @@ app.post("/api/change-birthdate", async (req, res) => {
         await delay(3000, 5000);
 
         // UI init calls Roblox makes when showing password modal
+        // These GET requests need x-bound-auth-token and traceparent
         logs.push("🔄 Initializing 2SV UI...");
+        const uiInitBat = await generateBoundAuthToken(`https://twostepverification.roblox.com/v1/users/${userId}/configuration`, "GET", null);
         await robloxRequest(`https://twostepverification.roblox.com/v1/users/${userId}/configuration?challengeId=${innerChallengeId}&actionType=Generic`, {
-            method: "GET", headers: { Cookie: roblosecurity },
+            method: "GET", headers: { Cookie: roblosecurity, ...(uiInitBat ? { "x-bound-auth-token": uiInitBat, "traceparent": `00-${traceId}-${Array.from({length:16},()=>Math.floor(Math.random()*16).toString(16)).join('')}-00` } : {}) },
         });
+        const usersBat = await generateBoundAuthToken(`https://users.roblox.com/v1/users/${userId}`, "GET", null);
         await robloxRequest(`https://users.roblox.com/v1/users/${userId}`, {
-            method: "GET", headers: { Cookie: roblosecurity },
+            method: "GET", headers: { Cookie: roblosecurity, ...(usersBat ? { "x-bound-auth-token": usersBat, "traceparent": `00-${traceId}-${Array.from({length:16},()=>Math.floor(Math.random()*16).toString(16)).join('')}-00` } : {}) },
         });
+        const metaBat = await generateBoundAuthToken(`https://twostepverification.roblox.com/v1/metadata`, "GET", null);
         await robloxRequest(`https://twostepverification.roblox.com/v1/metadata?userId=${userId}&challengeId=${innerChallengeId}&actionType=Generic&mediaType=Password`, {
-            method: "GET", headers: { Cookie: roblosecurity },
+            method: "GET", headers: { Cookie: roblosecurity, ...(metaBat ? { "x-bound-auth-token": metaBat, "traceparent": `00-${traceId}-${Array.from({length:16},()=>Math.floor(Math.random()*16).toString(16)).join('')}-00` } : {}) },
         });
         logs.push("✅ 2SV UI initialized");
 
@@ -409,7 +421,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     "x-csrf-token": csrfToken,
                     Cookie: roblosecurity,
                     "Accept": "application/json, text/plain, */*",
-                    "Content-Type": "application/json;charset=utf-8",
+                    "Content-Type": "application/json;charset=UTF-8",
                     "traceparent": `00-${traceId}-${Array.from({length:16},()=>Math.floor(Math.random()*16).toString(16)).join('')}-00`,
                 },
                 body: JSON.stringify({ challengeId: innerChallengeId, actionType: "Generic", code: password }),
@@ -457,7 +469,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     "x-csrf-token": csrfToken,
                     Cookie: roblosecurity,
                     "Accept": "application/json, text/plain, */*",
-                    "Content-Type": "application/json;charset=utf-8",
+                    "Content-Type": "application/json;charset=UTF-8",
                     "traceparent": `00-${traceId}-${Array.from({length:16},()=>Math.floor(Math.random()*16).toString(16)).join('')}-00`,
                     ...(step5BoundToken ? { "x-bound-auth-token": step5BoundToken } : {}),
                 },
@@ -497,7 +509,7 @@ app.post("/api/change-birthdate", async (req, res) => {
                     Cookie: roblosecurity,
                     "x-csrf-token": csrfToken,
                     "Accept": "application/json, text/plain, */*",
-                    "Content-Type": "application/json;charset=utf-8",
+                    "Content-Type": "application/json;charset=UTF-8",
                     "rblx-challenge-id": challenge1Data.challengeId,
                     "rblx-challenge-type": "chef",
                     "rblx-challenge-metadata": step6ChallengeMetadata,
