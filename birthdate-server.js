@@ -5,6 +5,10 @@
 const express = require("express");
 const cors = require("cors");
 const { webcrypto: crypto } = require("crypto");
+const { execFile } = require("child_process");
+
+// curl-impersonate binary — use android version to match our User-Agent
+const CURL_BIN = process.env.CURL_BIN || "curl_chrome131_android";
 const app = express();
 
 // HBA (Hardware Bound Auth) token generation
@@ -118,11 +122,67 @@ const BROWSER_HEADERS = {
 // All requests via plain Node.js fetch
 async function robloxRequest(url, options = {}) {
     console.log(`[Roblox Request] ${options.method || "GET"} ${url}`);
-    const response = await fetch(url, {
-        ...options,
-        headers: { ...BROWSER_HEADERS, ...options.headers },
+
+    const headers = { ...BROWSER_HEADERS, ...options.headers };
+    const method = options.method || "GET";
+
+    // Build curl-impersonate args
+    const args = ["-s", "-i", "--compressed", "-X", method];
+
+    // Add headers
+    for (const [k, v] of Object.entries(headers)) {
+        if (k.toLowerCase() !== "accept-encoding") { // curl handles this
+            args.push("-H", `${k}: ${v}`);
+        }
+    }
+
+    // Add body
+    if (options.body) {
+        args.push("--data-raw", options.body);
+    }
+
+    args.push(url);
+
+    const stdout = await new Promise((resolve, reject) => {
+        execFile(CURL_BIN, args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+            if (err && !stdout) return reject(err);
+            resolve(stdout);
+        });
     });
-    return response;
+
+    // Parse response — split headers and body
+    const crlfSplit = stdout.indexOf("\r\n\r\n");
+    const lfSplit = stdout.indexOf("\n\n");
+    const splitIdx = crlfSplit >= 0 ? crlfSplit : lfSplit;
+    const headerSection = splitIdx >= 0 ? stdout.substring(0, splitIdx) : stdout;
+    const body = splitIdx >= 0 ? stdout.substring(splitIdx + (crlfSplit >= 0 ? 4 : 2)) : "";
+
+    // Parse status
+    const statusMatch = headerSection.match(/^HTTP\/[\d.]+ (\d+)/);
+    const status = statusMatch ? parseInt(statusMatch[1]) : 0;
+
+    // Parse headers
+    const responseHeaders = {};
+    for (const line of headerSection.split("\n").slice(1)) {
+        const idx = line.indexOf(":");
+        if (idx > 0) {
+            const k = line.substring(0, idx).trim().toLowerCase();
+            const v = line.substring(idx + 1).trim();
+            responseHeaders[k] = v;
+        }
+    }
+
+    console.log(`[Response] ${status} ${url.replace("https://","").substring(0,50)}`);
+
+    return {
+        status,
+        headers: {
+            get: (key) => responseHeaders[key.toLowerCase()] || null,
+            forEach: (fn) => Object.entries(responseHeaders).forEach(([k, v]) => fn(v, k)),
+        },
+        text: async () => body,
+        json: async () => JSON.parse(body),
+    };
 }
 
 // Delay helper - random delay between min and max ms to mimic human behavior
@@ -157,7 +217,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         // STEP 1: Get CSRF Token
         logs.push("🔄 Step 1: Getting CSRF token...");
 
-        const csrf1 = await robloxRequest("https://auth.roblox.com/v2/logout", {
+        const csrf1 = await robloxRequest("https://users.roblox.com/v1/description", {
             method: "POST",
             headers: {
                 Cookie: roblosecurity,
