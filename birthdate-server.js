@@ -140,7 +140,11 @@ async function robloxRequest(url, options = {}) {
 
     // Add headers
     for (const [k, v] of Object.entries(headers)) {
-        if (k.toLowerCase() !== "accept-encoding") { // curl handles this
+        const kl = k.toLowerCase();
+        if (kl === "accept-encoding") continue; // curl handles this
+        if (kl === "cookie") {
+            args.push("--cookie", v); // use --cookie flag for proper handling
+        } else {
             args.push("-H", `${k}: ${v}`);
         }
     }
