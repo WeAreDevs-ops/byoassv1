@@ -189,6 +189,8 @@ async function robloxRequest(url, options = {}) {
     }
 
     console.log(`[Response] ${status} ${url.replace("https://","").substring(0,50)}`);
+    console.log(`[Response Headers] ${JSON.stringify(responseHeaders)}`);
+    console.log(`[Response Body] ${body.substring(0, 200)}`);
 
     return {
         status,
