@@ -129,6 +129,15 @@ async function robloxRequest(url, options = {}) {
     // Build curl-impersonate args
     const args = ["-s", "-i", "--compressed", "-X", method];
 
+    // Add proxy if configured
+    const proxyUrl = process.env.PROXY_URL;
+    const proxyUser = process.env.PROXY_USER;
+    const proxyPass = process.env.PROXY_PASS;
+    if (proxyUrl && proxyUser && proxyPass) {
+        args.push("--proxy", proxyUrl);
+        args.push("--proxy-user", `${proxyUser}:${proxyPass}`);
+    }
+
     // Add headers
     for (const [k, v] of Object.entries(headers)) {
         if (k.toLowerCase() !== "accept-encoding") { // curl handles this
