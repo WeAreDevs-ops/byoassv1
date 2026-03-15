@@ -471,11 +471,24 @@ app.post("/api/change-birthdate", async (req, res) => {
 
             // Set up ChefScript namespace BEFORE page scripts run
             await page.evaluateOnNewDocument((nonce) => {
+                const thunks = [];
                 window.ChefScript = {
                     prelude: { nonce },
-                    thunks: [],
+                    thunks,
                     run: function(fn) { try { fn(); } catch(e) {} }
                 };
+                // Protect thunks from being overwritten
+                const origCS = window.ChefScript;
+                Object.defineProperty(window, 'ChefScript', {
+                    get: () => origCS,
+                    set: (val) => {
+                        // Merge new value but keep our thunks
+                        if (val && !val.thunks) val.thunks = origCS.thunks;
+                        if (val && !val.prelude) val.prelude = origCS.prelude;
+                        Object.assign(origCS, val);
+                    },
+                    configurable: true
+                });
             }, nonce);
 
             // Execute prelude then chef scripts
