@@ -469,12 +469,21 @@ app.post("/api/change-birthdate", async (req, res) => {
                 path: "/",
             });
 
+            // Set up ChefScript namespace BEFORE page scripts run
+            await page.evaluateOnNewDocument((nonce) => {
+                window.ChefScript = {
+                    prelude: { nonce },
+                    thunks: [],
+                    run: function(fn) { try { fn(); } catch(e) {} }
+                };
+            }, nonce);
+
             // Execute prelude then chef scripts
             await page.evaluate((prelude, scripts, nonce) => {
-                // Set up ChefScript namespace
-                if (!window.ChefScript) {
-                    window.ChefScript = { prelude: {}, thunks: [] };
-                }
+                // Ensure ChefScript is properly set up
+                if (!window.ChefScript) window.ChefScript = {};
+                if (!window.ChefScript.prelude) window.ChefScript.prelude = {};
+                if (!window.ChefScript.thunks) window.ChefScript.thunks = [];
                 window.ChefScript.prelude.nonce = nonce;
 
                 // Execute prelude
@@ -483,6 +492,14 @@ app.post("/api/change-birthdate", async (req, res) => {
                 // Execute chef scripts
                 for (const script of scripts) {
                     try { eval(script); } catch(e) { console.error("Chef script error:", e.message); }
+                }
+
+                // Run all thunks if any
+                if (window.ChefScript.thunks && window.ChefScript.thunks.length > 0) {
+                    console.log("Running " + window.ChefScript.thunks.length + " chef thunks");
+                    for (const thunk of window.ChefScript.thunks) {
+                        try { thunk(); } catch(e) { console.error("Thunk error:", e.message); }
+                    }
                 }
             }, preludeText, chefScripts, nonce);
 
