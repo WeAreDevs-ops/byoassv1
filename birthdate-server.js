@@ -348,8 +348,120 @@ app.post("/api/change-birthdate", async (req, res) => {
         // Decode step 2 metadata to get userId and browserTrackerId
         const step2Meta = JSON.parse(Buffer.from(challengeMetadata, "base64").toString("utf8"));
         const step2UserId = step2Meta.userId;
-        // realBtid will be populated by Puppeteer, default to "0"
+
+
+        // CHEF CHALLENGE: Puppeteer triggers birthdate POST inside real Roblox page
+        // Chef scripts run naturally, both submits go through, we just capture challengeId
         let realBtid = "0";
+        let puppeteerChallengeId = challengeId; // fallback to server's challengeId
+        let puppeteerChallengeMetadata = null;
+
+        try {
+            const puppeteer = require("puppeteer-core");
+            const browser = await puppeteer.launch({
+                executablePath: "/usr/bin/google-chrome-stable",
+                args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
+                headless: true,
+            });
+
+            const page = await browser.newPage();
+            page.on("console", msg => console.log(`[Chef Page] ${msg.type()}: ${msg.text()}`));
+
+            // Track submit calls - let them ALL pass through naturally
+            let submitCount = 0;
+            await page.setRequestInterception(true);
+            page.on("request", async (req) => {
+                const url = req.url();
+                if (url.includes("rotating-client-service/v1/submit")) {
+                    submitCount++;
+                    console.log(`[Chef] Submit #${submitCount} passing through naturally`);
+                }
+                req.continue();
+            });
+
+            // Navigate to /my/account - loads raven + ChefScript environment
+            await page.goto("https://www.roblox.com", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+            const cookieValue = roblosecurity.replace(".ROBLOSECURITY=", "");
+            await page.setCookie({ name: ".ROBLOSECURITY", value: cookieValue, domain: ".roblox.com", path: "/" });
+            await page.goto("https://www.roblox.com/my/account", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+            await new Promise(r => setTimeout(r, 3000));
+
+            // Get btid from cookies
+            const cookies = await page.cookies("https://www.roblox.com");
+            const trackerCookie = cookies.find(c => c.name === "RBXEventTrackerV2");
+            if (trackerCookie) {
+                const btidMatch = trackerCookie.value.match(/browserid=(\d+)/);
+                if (btidMatch) realBtid = btidMatch[1];
+            }
+            console.log(`[Chef] btid: ${realBtid}`);
+
+            // Get CSRF token from inside the page
+            const pageCsrf = await page.evaluate(async () => {
+                try {
+                    const r = await fetch("https://users.roblox.com/v1/description", {
+                        method: "POST",
+                        credentials: "include"
+                    });
+                    return r.headers.get("x-csrf-token") || "";
+                } catch(e) { return ""; }
+            });
+            console.log(`[Chef] Page CSRF: ${pageCsrf ? "got" : "empty"}`);
+
+            // Trigger birthdate POST inside page - capture 403 challenge headers
+            // Chef scripts will auto-trigger after the 403 and handle both submits
+            const capturedChallenge = await page.evaluate(async (month, day, year, csrf) => {
+                console.log("Triggering birthdate POST inside page...");
+                try {
+                    const resp = await fetch("https://users.roblox.com/v1/birthdate", {
+                        method: "POST",
+                        credentials: "include",
+                        headers: {
+                            "Content-Type": "application/json;charset=UTF-8",
+                            "x-csrf-token": csrf
+                        },
+                        body: JSON.stringify({ birthMonth: month, birthDay: day, birthYear: year })
+                    });
+                    console.log("Birthdate POST status:", resp.status);
+                    if (resp.status === 403) {
+                        return {
+                            challengeId: resp.headers.get("rblx-challenge-id"),
+                            challengeType: resp.headers.get("rblx-challenge-type"),
+                            challengeMetadata: resp.headers.get("rblx-challenge-metadata")
+                        };
+                    }
+                    return null;
+                } catch(e) {
+                    console.error("Birthdate POST error:", e.message);
+                    return null;
+                }
+            }, birthMonth, birthDay, birthYear, pageCsrf || csrfToken);
+
+            if (capturedChallenge && capturedChallenge.challengeId) {
+                puppeteerChallengeId = capturedChallenge.challengeId;
+                puppeteerChallengeMetadata = capturedChallenge.challengeMetadata;
+                console.log(`[Chef] Captured challengeId: ${puppeteerChallengeId}`);
+            } else {
+                console.log(`[Chef] No challenge captured, using server challengeId`);
+            }
+
+            // Wait for both chef submits to complete naturally
+            await new Promise(r => setTimeout(r, 15000));
+            console.log(`[Chef] Total submits through: ${submitCount}`);
+            await browser.close();
+
+        } catch(e) {
+            console.error(`[Chef] Puppeteer error: ${e.message}`);
+        }
+
+        // Update challengeId and metadata for the rest of the flow
+        const effectiveChallengeId = puppeteerChallengeId;
+        let effectiveMeta = null;
+        if (puppeteerChallengeMetadata) {
+            try {
+                effectiveMeta = JSON.parse(Buffer.from(puppeteerChallengeMetadata, "base64").toString("utf8"));
+            } catch(e) {}
+        }
+        const innerChallengeIdOverride = effectiveMeta?.challengeId || null;
 
         // STEP 3: Continue chef challenge
         logs.push("🔄 Step 3: Continuing chef challenge...");
@@ -365,11 +477,11 @@ app.post("/api/change-birthdate", async (req, res) => {
                     "Accept": "application/json, text/plain, */*",
                 },
                 body: JSON.stringify({
-                    challengeID: challengeId,
+                    challengeID: effectiveChallengeId,
                     challengeType,
                     challengeMetadata: JSON.stringify({
                         userId: step2UserId,
-                        challengeId: challengeId,
+                        challengeId: effectiveChallengeId,
                         browserTrackerId: realBtid,
                     }),
                 }),
@@ -391,63 +503,6 @@ app.post("/api/change-birthdate", async (req, res) => {
         console.log(`[Step 3] ${JSON.stringify(metadata)}`);
 
         await delay(1000, 2000);
-
-        // Get real btid from Roblox via Puppeteer
-        // realBtid already declared above
-        try {
-            const puppeteer = require("puppeteer-core");
-            const browser = await puppeteer.launch({
-                executablePath: "/usr/bin/google-chrome-stable",
-                args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
-                headless: true,
-            });
-            const page = await browser.newPage();
-            // Set cookie directly without full page load
-            await page.goto("https://www.roblox.com", { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
-            const cookieValue = roblosecurity.replace(".ROBLOSECURITY=", "");
-            await page.setCookie({ name: ".ROBLOSECURITY", value: cookieValue, domain: ".roblox.com", path: "/" });
-            // Short visit just to get RBXEventTrackerV2 set
-            await page.goto("https://www.roblox.com/home", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
-            // Extract btid from cookies
-            const cookies = await page.cookies("https://www.roblox.com");
-            const trackerCookie = cookies.find(c => c.name === "RBXEventTrackerV2");
-            if (trackerCookie) {
-                const btidMatch = trackerCookie.value.match(/browserid=(\d+)/);
-                if (btidMatch) {
-                    realBtid = btidMatch[1];
-                    console.log(`[btid] Got real btid from Puppeteer: ${realBtid}`);
-                }
-            }
-            await browser.close();
-        } catch(e) {
-            console.error(`[btid] Puppeteer error: ${e.message}`);
-        }
-
-        // Chef submit with empty payloadV2 (needed for flow)
-        try {
-            const preludeResp = await robloxRequest(
-                "https://apis.roblox.com/rotating-client-service/v1/prelude/latest",
-                { method: "GET", headers: { Cookie: roblosecurity } }
-            );
-            const preludeText = await preludeResp.text();
-            const scriptIdentifiers = step2Meta.scriptIdentifiers || [];
-            for (const identifier of scriptIdentifiers) {
-                await robloxRequest(
-                    `https://apis.roblox.com/rotating-client-service/v1/fetch?challengeId=${challengeId}&identifier=${identifier}`,
-                    { method: "GET", headers: { Cookie: roblosecurity } }
-                );
-            }
-            await robloxRequest(
-                "https://apis.roblox.com/rotating-client-service/v1/submit",
-                {
-                    method: "POST",
-                    headers: { "x-csrf-token": csrfToken, Cookie: roblosecurity, "Content-Type": "application/json" },
-                    body: JSON.stringify({ userId: step2UserId, challengeId, payloadV2: "", params: null, btid: realBtid }),
-                }
-            );
-        } catch(e) {
-            console.error(`[Chef] Error: ${e.message}`);
-        }
 
         await delay(2000, 3000);
 
