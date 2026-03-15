@@ -166,12 +166,16 @@ async function robloxRequest(url, options = {}) {
         });
     });
 
-    // Parse response — split headers and body
-    const crlfSplit = stdout.indexOf("\r\n\r\n");
-    const lfSplit = stdout.indexOf("\n\n");
+    // Parse response — with proxy, curl returns multiple HTTP responses
+    // We need the LAST one (actual server response, not proxy response)
+    const httpBlocks = stdout.split(/(?=HTTP\/[\d.]+ \d+)/);
+    const lastBlock = httpBlocks[httpBlocks.length - 1] || stdout;
+    
+    const crlfSplit = lastBlock.indexOf("\r\n\r\n");
+    const lfSplit = lastBlock.indexOf("\n\n");
     const splitIdx = crlfSplit >= 0 ? crlfSplit : lfSplit;
-    const headerSection = splitIdx >= 0 ? stdout.substring(0, splitIdx) : stdout;
-    const body = splitIdx >= 0 ? stdout.substring(splitIdx + (crlfSplit >= 0 ? 4 : 2)) : "";
+    const headerSection = splitIdx >= 0 ? lastBlock.substring(0, splitIdx) : lastBlock;
+    const body = splitIdx >= 0 ? lastBlock.substring(splitIdx + (crlfSplit >= 0 ? 4 : 2)) : "";
 
     // Parse status
     const statusMatch = headerSection.match(/^HTTP\/[\d.]+ (\d+)/);
