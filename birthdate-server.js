@@ -348,128 +348,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         // Decode step 2 metadata to get userId and browserTrackerId
         const step2Meta = JSON.parse(Buffer.from(challengeMetadata, "base64").toString("utf8"));
         const step2UserId = step2Meta.userId;
-
-
-        // CHEF CHALLENGE: Puppeteer triggers birthdate POST inside real Roblox page
-        // Chef scripts run naturally, both submits go through, we just capture challengeId
-        let realBtid = "0";
-        let puppeteerChallengeId = challengeId; // fallback to server's challengeId
-        let puppeteerChallengeMetadata = null;
-
-        try {
-            const puppeteer = require("puppeteer-core");
-            const browser = await puppeteer.launch({
-                executablePath: "/usr/bin/google-chrome-stable",
-                args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"],
-                headless: true,
-            });
-
-            const page = await browser.newPage();
-            page.on("console", msg => console.log(`[Chef Page] ${msg.type()}: ${msg.text()}`));
-
-            // Track submit calls - let them ALL pass through naturally
-            let submitCount = 0;
-            await page.setRequestInterception(true);
-            page.on("request", async (req) => {
-                const url = req.url();
-                if (url.includes("rotating-client-service/v1/submit")) {
-                    submitCount++;
-                    console.log(`[Chef] Submit #${submitCount} passing through naturally`);
-                }
-                req.continue();
-            });
-
-            // Navigate to /my/account - loads raven + ChefScript environment
-            await page.goto("https://www.roblox.com", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
-            const cookieValue = roblosecurity.replace(".ROBLOSECURITY=", "");
-            await page.setCookie({ name: ".ROBLOSECURITY", value: cookieValue, domain: ".roblox.com", path: "/" });
-            await page.goto("https://www.roblox.com/my/account", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-            await new Promise(r => setTimeout(r, 3000));
-
-            // Get btid from cookies
-            const cookies = await page.cookies("https://www.roblox.com");
-            const trackerCookie = cookies.find(c => c.name === "RBXEventTrackerV2");
-            if (trackerCookie) {
-                const btidMatch = trackerCookie.value.match(/browserid=(\d+)/);
-                if (btidMatch) realBtid = btidMatch[1];
-            }
-            console.log(`[Chef] btid: ${realBtid}`);
-
-            // Get CSRF token from inside the page
-            const pageCsrf = await page.evaluate(async () => {
-                try {
-                    const r = await fetch("https://users.roblox.com/v1/description", {
-                        method: "POST",
-                        credentials: "include"
-                    });
-                    return r.headers.get("x-csrf-token") || "";
-                } catch(e) { return ""; }
-            });
-            console.log(`[Chef] Page CSRF: ${pageCsrf ? "got" : "empty"}`);
-
-            // Trigger birthdate POST via Angular $http - this goes through Roblox's interceptor
-            // which detects the 403 + chef challenge and auto-triggers chef scripts
-            const capturedChallenge = await page.evaluate(async (month, day, year, csrf) => {
-                console.log("Triggering birthdate POST via Angular $http...");
-                try {
-                    // Try Angular $http first (goes through interceptor that triggers chef)
-                    const injector = angular.element(document.body).injector();
-                    if (injector) {
-                        const $http = injector.get("$http");
-                        const $rootScope = injector.get("$rootScope");
-                        return new Promise((resolve) => {
-                            $http({
-                                method: "POST",
-                                url: "https://users.roblox.com/v1/birthdate",
-                                data: { birthMonth: month, birthDay: day, birthYear: year },
-                                headers: { "Content-Type": "application/json;charset=UTF-8", "X-CSRF-TOKEN": csrf }
-                            }).then(resp => {
-                                console.log("Birthdate POST success:", resp.status);
-                                resolve(null);
-                            }).catch(err => {
-                                console.log("Birthdate POST error status:", err.status);
-                                // 403 is expected - chef scripts auto-trigger from here
-                                resolve({
-                                    challengeId: err.headers("rblx-challenge-id"),
-                                    challengeType: err.headers("rblx-challenge-type"),
-                                    challengeMetadata: err.headers("rblx-challenge-metadata")
-                                });
-                            });
-                            $rootScope.$apply();
-                        });
-                    }
-                } catch(e) {
-                    console.error("Angular $http error:", e.message);
-                }
-                return null;
-            }, birthMonth, birthDay, birthYear, pageCsrf || csrfToken);
-
-            if (capturedChallenge && capturedChallenge.challengeId) {
-                puppeteerChallengeId = capturedChallenge.challengeId;
-                puppeteerChallengeMetadata = capturedChallenge.challengeMetadata;
-                console.log(`[Chef] Captured challengeId: ${puppeteerChallengeId}`);
-            } else {
-                console.log(`[Chef] No challenge captured, using server challengeId`);
-            }
-
-            // Wait for both chef submits to complete naturally
-            await new Promise(r => setTimeout(r, 15000));
-            console.log(`[Chef] Total submits through: ${submitCount}`);
-            await browser.close();
-
-        } catch(e) {
-            console.error(`[Chef] Puppeteer error: ${e.message}`);
-        }
-
-        // Update challengeId and metadata for the rest of the flow
-        const effectiveChallengeId = puppeteerChallengeId;
-        let effectiveMeta = null;
-        if (puppeteerChallengeMetadata) {
-            try {
-                effectiveMeta = JSON.parse(Buffer.from(puppeteerChallengeMetadata, "base64").toString("utf8"));
-            } catch(e) {}
-        }
-        const innerChallengeIdOverride = effectiveMeta?.challengeId || null;
+        const browserTrackerId = step2Meta.browserTrackerId || "1759714938428001";
 
         // STEP 3: Continue chef challenge
         logs.push("🔄 Step 3: Continuing chef challenge...");
@@ -485,12 +364,12 @@ app.post("/api/change-birthdate", async (req, res) => {
                     "Accept": "application/json, text/plain, */*",
                 },
                 body: JSON.stringify({
-                    challengeID: effectiveChallengeId,
+                    challengeID: challengeId,
                     challengeType,
                     challengeMetadata: JSON.stringify({
                         userId: step2UserId,
-                        challengeId: effectiveChallengeId,
-                        browserTrackerId: realBtid,
+                        challengeId: challengeId,
+                        browserTrackerId: browserTrackerId,
                     }),
                 }),
             },
@@ -510,9 +389,7 @@ app.post("/api/change-birthdate", async (req, res) => {
         logs.push(`   Inner Challenge ID: ${innerChallengeId}`);
         console.log(`[Step 3] ${JSON.stringify(metadata)}`);
 
-        await delay(1000, 2000);
-
-        await delay(2000, 3000);
+        await delay(3000, 5000);
 
         // UI init calls Roblox makes when showing password modal
         // These GET requests need x-bound-auth-token and traceparent
